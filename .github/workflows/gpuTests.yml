@@ -20,3 +20,14 @@ jobs:
     
     - name: print hello
       run: printf "Hello GPU!"
+
+    - name: Setup Java
+      uses: actions/setup-java@v2
+      with:
+        distribution: 'adopt'
+        java-version: '11'
+        cache: 'maven'
+
+    - name: GPU Tests
+      run: mvn -ntp test -DenableGPU=true -Dmaven.test.skip=false -Dtest-parallel=suites -Dtest-threadCount=1 -Dtest-forkCount=1 -D automatedtestbase.outputbuffering=false -Dtest=org.apache.sysds.test.gpu.**
+

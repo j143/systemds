@@ -51,7 +51,7 @@ RUN apt-get update -qq \
 	&& git clone --depth 1 https://github.com/apache/systemds.git systemds && \
 	cd /usr/src/systemds/ && \
 	mvn clean package -P distribution && \
-	rm -r docker && \
+# 	rm -r docker && \
 	rm -r docs && \
 	rm -r src && \
 	rm -r /usr/lib/mvn && \

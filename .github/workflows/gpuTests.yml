@@ -28,6 +28,11 @@ jobs:
         java-version: '11'
         cache: 'maven'
 
-    - name: GPU Tests
-      run: mvn -ntp test -DenableGPU=true -Dmaven.test.skip=false -Dtest-parallel=suites -Dtest-threadCount=1 -Dtest-forkCount=1 -D automatedtestbase.outputbuffering=false -Dtest=org.apache.sysds.test.gpu.**
-
+    - name: GPU Tests - CellwiseTmplTest
+      run: mvn -ntp test -DenableGPU=true -Dmaven.test.skip=false -Dtest-parallel=suites -Dtest-threadCount=1 -Dtest-forkCount=1 -D automatedtestbase.tputbuffering=false -Dtest=org.apache.sysds.test.gpu.codegen.CellwiseTmplTest.java
+      
+    - name: GPU Tests - BuiltinUnaryGPUInstructionTest
+      run: mvn -ntp test -DenableGPU=true -Dmaven.test.skip=false -Dtest-parallel=suites -Dtest-threadCount=1 -Dtest-forkCount=1 -D automatedtestbase.tputbuffering=false -Dtest=org.apache.sysds.test.gpu.BuiltinUnaryGPUInstructionTest.java
+    
+    - name: GPU Tests - RowAggTmplTest
+      run: mvn -ntp test -DenableGPU=true -Dmaven.test.skip=false -Dtest-parallel=suites -Dtest-threadCount=1 -Dtest-forkCount=1 -D automatedtestbase.tputbuffering=false -Dtest=org.apache.sysds.test.gpu.codegen.RowAggTmplTest.java

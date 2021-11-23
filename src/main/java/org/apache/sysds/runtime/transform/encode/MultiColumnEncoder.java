@@ -32,6 +32,8 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -40,6 +42,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types;
+import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.caching.CacheBlock;
 import org.apache.sysds.runtime.data.SparseBlock;
@@ -47,6 +50,7 @@ import org.apache.sysds.runtime.data.SparseBlockMCSR;
 import org.apache.sysds.runtime.data.SparseRowVector;
 import org.apache.sysds.runtime.matrix.data.FrameBlock;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
+import org.apache.sysds.runtime.util.CommonThreadPool;
 import org.apache.sysds.runtime.util.DependencyTask;
 import org.apache.sysds.runtime.util.DependencyThreadPool;
 import org.apache.sysds.runtime.util.DependencyWrapperTask;
@@ -56,9 +60,8 @@ import org.apache.sysds.utils.Statistics;
 public class MultiColumnEncoder implements Encoder {
 
 	protected static final Log LOG = LogFactory.getLog(MultiColumnEncoder.class.getName());
-	private static final boolean MULTI_THREADED = true;
 	// If true build and apply separately by placing a synchronization barrier
-	public static boolean MULTI_THREADED_STAGES = false;
+	public static boolean MULTI_THREADED_STAGES = ConfigurationManager.isStagedParallelTransform();
 
 	// Only affects if  MULTI_THREADED_STAGES is true
 	// if true apply tasks for each column will complete
@@ -87,7 +90,7 @@ public class MultiColumnEncoder implements Encoder {
 	public MatrixBlock encode(CacheBlock in, int k) {
 		MatrixBlock out;
 		try {
-			if(MULTI_THREADED && k > 1 && !MULTI_THREADED_STAGES && !hasLegacyEncoder()) {
+			if(k > 1 && !MULTI_THREADED_STAGES && !hasLegacyEncoder()) {
 				out = new MatrixBlock();
 				DependencyThreadPool pool = new DependencyThreadPool(k);
 				LOG.debug("Encoding with full DAG on " + k + " Threads");
@@ -103,7 +106,10 @@ public class MultiColumnEncoder implements Encoder {
 			}
 			else {
 				LOG.debug("Encoding with staged approach on: " + k + " Threads");
+				long t0 = System.nanoTime();
 				build(in, k);
+				long t1 = System.nanoTime();
+				LOG.debug("Elapsed time for build phase: "+ ((double) t1 - t0) / 1000000 + " ms");
 				if(_legacyMVImpute != null) {
 					// These operations are redundant for every encoder excluding the legacyMVImpute, the workaround to
 					// fix it for this encoder would be very dirty. This will only have a performance impact if there
@@ -113,7 +119,10 @@ public class MultiColumnEncoder implements Encoder {
 					initMetaData(_meta);
 				}
 				// apply meta data
+				t0 = System.nanoTime();
 				out = apply(in, k);
+				t1 = System.nanoTime();
+				LOG.debug("Elapsed time for apply phase: "+ ((double) t1 - t0) / 1000000 + " ms");
 			}
 		}
 		catch(Exception ex) {
@@ -187,7 +196,7 @@ public class MultiColumnEncoder implements Encoder {
 	public void build(CacheBlock in, int k) {
 		if(hasLegacyEncoder() && !(in instanceof FrameBlock))
 			throw new DMLRuntimeException("LegacyEncoders do not support non FrameBlock Inputs");
-		if(MULTI_THREADED && k > 1) {
+		if(k > 1) {
 			buildMT(in, k);
 		}
 		else {
@@ -255,7 +264,7 @@ public class MultiColumnEncoder implements Encoder {
 		// TODO smart checks
 		// Block allocation for MT access
 		outputMatrixPreProcessing(out, in);
-		if(MULTI_THREADED && k > 1) {
+		if(k > 1) {
 			applyMT(in, out, outputCol, k);
 		}
 		else {
@@ -351,15 +360,50 @@ public class MultiColumnEncoder implements Encoder {
 	}
 
 	@Override
+	public void allocateMetaData(FrameBlock meta) {
+		for(ColumnEncoder columnEncoder : _columnEncoders) {
+			columnEncoder.allocateMetaData(meta);
+		}
+	}
+
+	@Override
 	public FrameBlock getMetaData(FrameBlock meta) {
+		getMetaData(meta, 1);
+		return meta;
+	}
+
+	public FrameBlock getMetaData(FrameBlock meta, int k) {
+		long t0 = System.nanoTime();
 		if(_meta != null)
 			return _meta;
-		for(ColumnEncoder columnEncoder : _columnEncoders)
-			columnEncoder.getMetaData(meta);
+		this.allocateMetaData(meta);
+		if (k > 1) {
+			try {
+				ExecutorService pool = CommonThreadPool.get(k);
+				ArrayList<ColumnMetaDataTask<? extends ColumnEncoder>> tasks = new ArrayList<>();
+				for(ColumnEncoder columnEncoder : _columnEncoders)
+					tasks.add(new ColumnMetaDataTask<>(columnEncoder, meta));
+				List<Future<Object>> taskret = pool.invokeAll(tasks);
+				pool.shutdown();
+				for (Future<Object> task : taskret)
+					task.get();
+			}
+			catch(Exception ex) {
+				throw new DMLRuntimeException(ex);
+			}
+		}
+		else {
+			for(ColumnEncoder columnEncoder : _columnEncoders)
+				columnEncoder.getMetaData(meta);
+		}
+
+		//_columnEncoders.stream().parallel().forEach(columnEncoder -> 
+		//		columnEncoder.getMetaData(meta));
 		if(_legacyOmit != null)
 			_legacyOmit.getMetaData(meta);
 		if(_legacyMVImpute != null)
 			_legacyMVImpute.getMetaData(meta);
+		LOG.debug("Time spent getting metadata "+((double) System.nanoTime() - t0) / 1000000 + " ms");
 		return meta;
 	}
 
@@ -849,6 +893,22 @@ public class MultiColumnEncoder implements Encoder {
 				((ApplyTasksWrapperTask) dtask).setOffset(currentOffset);
 
 			}
+			return null;
+		}
+	}
+	
+	private static class ColumnMetaDataTask<T extends ColumnEncoder> implements Callable<Object> {
+		private final T _colEncoder;
+		private final FrameBlock _out;
+
+		protected ColumnMetaDataTask(T encoder, FrameBlock out) {
+			_colEncoder = encoder;
+			_out = out;
+		}
+
+		@Override
+		public Object call() throws Exception {
+			_colEncoder.getMetaData(_out);
 			return null;
 		}
 	}

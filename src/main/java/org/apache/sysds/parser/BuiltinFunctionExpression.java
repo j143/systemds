@@ -1266,16 +1266,16 @@ public class BuiltinFunctionExpression extends DataIdentifier
 			{
 				checkNumParameters(4);
 				if (in[3].getOutput().getValueType() != ValueType.INT64) 
-					throw new LanguageException("Fourth arugment, seed, to sample() must be an integer value.");
+					throw new LanguageException("Fourth argument, seed, to sample() must be an integer value.");
 				if (in[2].getOutput().getValueType() != ValueType.BOOLEAN ) 
-					throw new LanguageException("Third arugment to sample() must either denote replacement policy (boolean) or seed (integer).");
+					throw new LanguageException("Third argument to sample() must either denote replacement policy (boolean) or seed (integer).");
 			}
 			else if(in.length == 3) 
 			{
 				checkNumParameters(3);
 				if (in[2].getOutput().getValueType() != ValueType.BOOLEAN 
 						&& in[2].getOutput().getValueType() != ValueType.INT64 ) 
-					throw new LanguageException("Third arugment to sample() must either denote replacement policy (boolean) or seed (integer).");
+					throw new LanguageException("Third argument to sample() must either denote replacement policy (boolean) or seed (integer).");
 			}
 			
 			if ( check && in.length >= 3 
@@ -1580,6 +1580,17 @@ public class BuiltinFunctionExpression extends DataIdentifier
 			output.setBlocksize (id.getBlocksize());
 
 			break;
+		case LOCAL:
+			if(OptimizerUtils.ALLOW_SCRIPT_LEVEL_LOCAL_COMMAND){
+				checkNumParameters(1);
+				checkMatrixParam(getFirstExpr());
+				output.setDataType(DataType.MATRIX);
+				output.setDimensions(id.getDim1(), id.getDim2());
+				output.setBlocksize (id.getBlocksize());
+				output.setValueType(id.getValueType());
+			}
+			else 
+				raiseValidateError("Local instruction not allowed in dml script");
 		case COMPRESS:
 		case DECOMPRESS:
 			if(OptimizerUtils.ALLOW_SCRIPT_LEVEL_COMPRESS_COMMAND){
@@ -1591,8 +1602,7 @@ public class BuiltinFunctionExpression extends DataIdentifier
 				output.setValueType(id.getValueType());
 			}
 			else
-				raiseValidateError("Compress instruction not allowed in dml script");
-			
+				raiseValidateError("Compress/DeCompress instruction not allowed in dml script");
 			break;
 		default:
 			if( isMathFunction() ) {

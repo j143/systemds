@@ -22,6 +22,7 @@
 import unittest
 
 import numpy as np
+from time import sleep
 from systemds.context import SystemDSContext
 
 
@@ -32,6 +33,10 @@ class TestPrint(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.sds = SystemDSContext()
+        sleep(1.0)
+        # Clear stdout ...
+        cls.sds.get_stdout()
+        cls.sds.get_stdout()
 
     @classmethod
     def tearDownClass(cls):

@@ -114,6 +114,9 @@ public class Types
 					throw new DMLRuntimeException("Unknown value type: "+value);
 			}
 		}
+		public static boolean isSameTypeString(ValueType vt1, ValueType vt2) {
+			return vt1.toExternalString().equals(vt2.toExternalString());
+		}
 	}
 	
 	/**
@@ -238,7 +241,8 @@ public class Types
 		SIGMOID, //sigmoid function: 1 / (1 + exp(-X))
 		LOG_NZ, //sparse-safe log; ppred(X,0,"!=")*log(X)
 		
-		COMPRESS, DECOMPRESS, 
+		COMPRESS, DECOMPRESS,
+		LOCAL, // instruction to pull data back from spark forcefully and return a CP matrix.
 
 		//low-level operators //TODO used?
 		MULT2, MINUS1_MULT, MINUS_RIGHT, 

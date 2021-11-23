@@ -179,6 +179,7 @@ public enum Builtins {
 	LMCG("lmCG", true),
 	LMDS("lmDS", true),
 	LMPREDICT("lmPredict", true),
+	LOCAL("local", false),
 	LOG("log", false),
 	LOGSUMEXP("logSumExp", true),
 	LSTM("lstm", false, ReturnType.MULTI_RETURN),
@@ -309,6 +310,7 @@ public enum Builtins {
 	TRANSFORMDECODE("transformdecode", false, true),
 	TRANSFORMENCODE("transformencode", false, true),
 	TRANSFORMMETA("transformmeta", false, true),
+	UNDER_SAMPLING("underSampling", true),
 	UPPER_TRI("upper.tri", false, true),
 	XDUMMY1("xdummy1", true), //error handling test
 	XDUMMY2("xdummy2", true); //error handling test

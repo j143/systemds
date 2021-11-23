@@ -68,7 +68,7 @@ RUN apt-get update -qq \
 	rm -r pom.xml && \ 
 	rm -r ~/.m2
 
-RUN echo 'print("Hello from SystemDS")' > /input/main.dml
+RUN mkdir /input && echo 'print("Hello from SystemDS")' > /input/main.dml
 
 # COPY docker/mountFolder/main.dml /input/main.dml
 

@@ -48,7 +48,7 @@ RUN apt-get update -qq \
 	&& wget -qO- \
 	http://archive.apache.org/dist/maven/maven-3/$MAVEN_VERSION/binaries/apache-maven-$MAVEN_VERSION-bin.tar.gz | tar xzf - \ 
 	&& mv apache-maven-$MAVEN_VERSION /usr/lib/mvn \
-	&& git clone --depth 1 https://github.com/j143/systemds.git systemds && \
+	&& git clone --depth 1 https://github.com/apache/systemds.git systemds && \
 	cd /usr/src/systemds/ && \
 	mvn clean package -P distribution && \
 	rm -r .git && \

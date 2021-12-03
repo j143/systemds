@@ -19,6 +19,7 @@
 
 package org.apache.sysds.runtime.instructions.fed;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.sysds.common.Types;
 import org.apache.sysds.lops.SortKeys;
 import org.apache.sysds.runtime.DMLRuntimeException;
@@ -32,6 +33,7 @@ import org.apache.sysds.runtime.controlprogram.federated.FederationUtils;
 import org.apache.sysds.runtime.instructions.InstructionUtils;
 import org.apache.sysds.runtime.instructions.cp.CPOperand;
 import org.apache.sysds.runtime.instructions.cp.Data;
+import org.apache.sysds.runtime.lineage.LineageItem;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 
 public class QuantileSortFEDInstruction extends UnaryFEDInstruction{
@@ -73,34 +75,6 @@ public class QuantileSortFEDInstruction extends UnaryFEDInstruction{
 			throw new DMLRuntimeException("Unknown opcode while parsing a QuantileSortFEDInstruction: " + str);
 		}
 	}
-
-
-//	@Override
-//	public void processInstruction(ExecutionContext ec) {
-//		MatrixObject in = ec.getMatrixObject(input1.getName());
-//		FederationMap map = in.getFedMapping();
-//
-//		//create federated commands for aggregation
-//		FederatedRequest fr1 = FederationUtils
-//			.callInstruction(instString, output, new CPOperand[] {input1}, new long[] {in.getFedMapping().getID()});
-//		FederatedRequest fr2 = new FederatedRequest(FederatedRequest.RequestType.GET_VAR, fr1.getID());
-//		FederatedRequest fr3 = map.cleanup(getTID(), fr1.getID());
-//
-//		Future<FederatedResponse>[] tmp = map.execute(getTID(), fr1, fr2, fr3);
-//
-//		try {
-//			Object d = tmp[0].get().getData()[0];
-//			System.out.println(1);
-//		}
-//		catch(Exception e) {
-//			e.printStackTrace();
-//		}
-//
-//		MatrixObject out = ec.getMatrixObject(output);
-//		out.getDataCharacteristics().set(in.getDataCharacteristics());
-//		out.setFedMapping(in.getFedMapping().copyWithNewID(fr2.getID()));
-//	}
-
 
 	@Override
 	public void processInstruction(ExecutionContext ec) {
@@ -158,6 +132,10 @@ public class QuantileSortFEDInstruction extends UnaryFEDInstruction{
 			ec.setVariable(String.valueOf(_outputID), mout);
 			// return schema
 			return new FederatedResponse(FederatedResponse.ResponseType.SUCCESS_EMPTY);
+		}
+		@Override
+		public Pair<String, LineageItem> getLineageItem(ExecutionContext ec) {
+			return null;
 		}
 	}
 }

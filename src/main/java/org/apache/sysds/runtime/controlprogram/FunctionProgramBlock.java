@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.common.Types.FunctionBlock;
+import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.recompile.Recompiler;
 import org.apache.sysds.hops.recompile.Recompiler.ResetType;
@@ -116,8 +117,8 @@ public class FunctionProgramBlock extends ProgramBlock implements FunctionBlock
 				boolean codegen = ConfigurationManager.isCodegenEnabled();
 				boolean singlenode = DMLScript.getGlobalExecMode() == ExecMode.SINGLE_NODE;
 				ResetType reset = (codegen || singlenode) ? ResetType.RESET_KNOWN_DIMS : ResetType.RESET;
-				Recompiler.recompileProgramBlockHierarchy(_childBlocks, tmp, _tid, reset);
-				
+				Recompiler.recompileProgramBlockHierarchy(_childBlocks, tmp, _tid, false, reset);
+
 				if( DMLScript.STATISTICS ){
 					long t1 = System.nanoTime();
 					Statistics.incrementFunRecompileTime(t1-t0);
@@ -155,7 +156,7 @@ public class FunctionProgramBlock extends ProgramBlock implements FunctionBlock
 				LOG.error("Function output "+ varName +" is missing.");
 			else if( dat.getDataType() != diOut.getDataType() )
 				LOG.warn("Function output "+ varName +" has wrong data type: "+dat.getDataType()+".");
-			else if( dat.getValueType() != diOut.getValueType() )
+			else if( diOut.getValueType() != ValueType.UNKNOWN && dat.getValueType() != diOut.getValueType() )
 				LOG.warn("Function output "+ varName +" has wrong value type: "+dat.getValueType()+".");
 		}
 	}

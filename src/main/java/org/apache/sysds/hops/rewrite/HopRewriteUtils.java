@@ -20,6 +20,8 @@
 package org.apache.sysds.hops.rewrite;
 
 import org.apache.commons.lang.ArrayUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ExecMode;
@@ -56,6 +58,7 @@ import org.apache.sysds.hops.ParameterizedBuiltinOp;
 import org.apache.sysds.hops.ReorgOp;
 import org.apache.sysds.hops.TernaryOp;
 import org.apache.sysds.hops.UnaryOp;
+import org.apache.sysds.parser.DMLProgram;
 import org.apache.sysds.parser.DataExpression;
 import org.apache.sysds.parser.DataIdentifier;
 import org.apache.sysds.parser.ForStatement;
@@ -86,8 +89,8 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 
-public class HopRewriteUtils 
-{
+public class HopRewriteUtils {
+	private static final Log LOG = LogFactory.getLog(HopRewriteUtils.class.getName());
 
 	public static boolean isValueTypeCast( OpOp1 op ) {
 		return op == OpOp1.CAST_AS_BOOLEAN
@@ -100,8 +103,8 @@ public class HopRewriteUtils
 
 	public static boolean getBooleanValue( LiteralOp op ) {
 		switch( op.getValueType() ) {
-			case FP64:  return op.getDoubleValue() != 0; 
-			case INT64:     return op.getLongValue()   != 0;
+			case FP64:    return op.getDoubleValue() != 0; 
+			case INT64:   return op.getLongValue()   != 0;
 			case BOOLEAN: return op.getBooleanValue();
 			default: throw new HopsException("Invalid boolean value: "+op.getValueType());
 		}
@@ -110,8 +113,8 @@ public class HopRewriteUtils
 	public static boolean getBooleanValueSafe( LiteralOp op ) {
 		try {
 			switch( op.getValueType() ) {
-				case FP64:  return op.getDoubleValue() != 0; 
-				case INT64:     return op.getLongValue()   != 0;
+				case FP64:    return op.getDoubleValue() != 0; 
+				case INT64:   return op.getLongValue()   != 0;
 				case BOOLEAN: return op.getBooleanValue();
 				default: throw new HopsException("Invalid boolean value: "+op.getValueType());
 			}
@@ -126,8 +129,8 @@ public class HopRewriteUtils
 	public static double getDoubleValue( LiteralOp op ) {
 		switch( op.getValueType() ) {
 			case STRING:
-			case FP64:  return op.getDoubleValue(); 
-			case INT64:     return op.getLongValue();
+			case FP64:    return op.getDoubleValue(); 
+			case INT64:   return op.getLongValue();
 			case BOOLEAN: return op.getBooleanValue() ? 1 : 0;
 			default: throw new HopsException("Invalid double value: "+op.getValueType());
 		}
@@ -707,6 +710,13 @@ public class HopRewriteUtils
 		return createUnary(ix, OpOp1.CAST_AS_SCALAR);
 	}
 	
+	public static IndexingOp createIndexingOp(Hop input, Hop batchsize) {
+		LiteralOp rl = new LiteralOp(1);
+		LiteralOp cl = new LiteralOp(1);
+		Hop cu = createUnary(input, OpOp1.NCOL);
+		return createIndexingOp(input, rl, batchsize, cl, cu);
+	}
+	
 	public static IndexingOp createIndexingOp(Hop input, long rix, long cix) {
 		LiteralOp row = new LiteralOp(rix);
 		LiteralOp col = new LiteralOp(cix);
@@ -802,7 +812,7 @@ public class HopRewriteUtils
 	}
 	
 	public static TernaryOp createTernary(Hop in1, Hop in2, Hop in3, Hop in4, Hop in5, OpOp3 op) {
-		TernaryOp ternOp = new TernaryOp("tmp", DataType.MATRIX, ValueType.FP64, op, in1, in2, in3, in4, in5);
+		TernaryOp ternOp = new TernaryOp("tmp", DataType.MATRIX, ValueType.FP64, op, in1, in2, in3, in4, in5, new LiteralOp(true));
 		ternOp.setBlocksize(Math.max(in1.getBlocksize(), in2.getBlocksize()));
 		copyLineNumbers(in1, ternOp);
 		ternOp.refreshSizeInformation();
@@ -955,6 +965,10 @@ public class HopRewriteUtils
 	
 	public static boolean isSparse( Hop hop, double threshold ) {
 		return hop.getSparsity() < threshold;
+	}
+
+	public static boolean isEqualValue( Hop hop1, Hop hop2 ) {
+		return isEqualValue((LiteralOp)hop1, (LiteralOp)hop2);
 	}
 	
 	public static boolean isEqualValue( LiteralOp hop1, LiteralOp hop2 ) {
@@ -1109,6 +1123,13 @@ public class HopRewriteUtils
 		return ret;
 	}
 	
+	public static boolean isData(Hop hop, OpOpData... types) {
+		boolean ret = false;
+		for( OpOpData type : types )
+			ret |= isData(hop, type);
+		return ret;
+	}
+	
 	public static boolean isData(Hop hop, OpOpData type) {
 		return hop instanceof DataOp && ((DataOp)hop).getOp()==type;
 	}
@@ -1117,6 +1138,12 @@ public class HopRewriteUtils
 		return hop instanceof BinaryOp 
 			&& hop.getInput().get(0).getDataType().isMatrix() && hop.getInput().get(1).getDataType().isMatrix()
 			&& hop.getInput().get(0).dimsKnown() && hop.getInput().get(1).dimsKnown() && hop.getInput().get(1).getDim2() == 1;
+	}
+
+	public static boolean isBinaryMatrixRowVectorOperation(Hop hop) {
+		return hop instanceof BinaryOp 
+			&& hop.getInput().get(0).getDataType().isMatrix() && hop.getInput().get(1).getDataType().isMatrix()
+			&& hop.getInput().get(0).dimsKnown() && hop.getInput().get(1).dimsKnown() && hop.getInput().get(1).getDim1() == 1;
 	}
 	
 	public static boolean isUnary(Hop hop, OpOp1 type) {
@@ -1371,7 +1398,7 @@ public class HopRewriteUtils
 	public static boolean alwaysRequiresReblock(Hop hop) {
 		return (hop instanceof DataOp
 			&& ((DataOp)hop).getOp()==OpOpData.PERSISTENTREAD
-			 && ((DataOp)hop).getInputFormatType()!=FileFormat.BINARY);
+			 && ((DataOp)hop).getFileFormat()!=FileFormat.BINARY);
 	}
 	
 	public static boolean containsOp(ArrayList<Hop> candidates, Class<? extends Hop> clazz) {
@@ -1573,6 +1600,11 @@ public class HopRewriteUtils
 		return Arrays.stream(mc).allMatch(h -> h.nnzKnown() || (worstcase && h.dimsKnown()));
 	}
 	
+	public static boolean hasListInputs(Hop hop) {
+		return hop.getInput()!= null 
+			&& hop.getInput().stream().anyMatch(h -> h.getDataType().isList());
+	}
+	
 	public static boolean containsSecondOrderBuiltin(ArrayList<Hop> roots) {
 		Hop.resetVisitStatus(roots);
 		return roots.stream().anyMatch(r -> containsSecondOrderBuiltin(r));
@@ -1582,8 +1614,37 @@ public class HopRewriteUtils
 		if( hop.isVisited() ) return false;
 		hop.setVisited();
 		return HopRewriteUtils.isNary(hop, OpOpN.EVAL)
-			|| HopRewriteUtils.isParameterBuiltinOp(hop, ParamBuiltinOp.PARAMSERV)
+			|| (HopRewriteUtils.isParameterBuiltinOp(hop, ParamBuiltinOp.PARAMSERV) 
+				&& !knownParamservFunctions(hop))
 			|| hop.getInput().stream().anyMatch(c -> containsSecondOrderBuiltin(c));
+	}
+	
+	public static boolean knownParamservFunctions(Hop hop) {
+		ParameterizedBuiltinOp pop = (ParameterizedBuiltinOp) hop;
+		return pop.getParameterHop("upd") instanceof LiteralOp
+			&& pop.getParameterHop("agg") instanceof LiteralOp
+			&& (pop.getParameterHop("val") == null 
+			 || pop.getParameterHop("val") instanceof LiteralOp);
+	}
+	
+	public static boolean knownParamservFunctions(Hop hop, DMLProgram prog) {
+		if( !knownParamservFunctions(hop) )
+			return false;
+		try {
+			ParameterizedBuiltinOp pop = (ParameterizedBuiltinOp) hop;
+			String supd = ((LiteralOp)pop.getParameterHop("upd")).getStringValue();
+			String sagg = ((LiteralOp)pop.getParameterHop("agg")).getStringValue();
+			//if functions not existing, let runtime handle it consistently
+			return prog.getFunctionStatementBlock(supd) != null
+				&& prog.getFunctionStatementBlock(sagg) != null;
+		}
+		catch(Exception ex) {
+			// If the function keys are incorrect this exception is caught for robustness in error messages for users.
+			// Intensionally only catching the exception!
+			// For debugging if for some reason the error we encountered was something else we LOG the error.
+			LOG.error(ex);
+			return false;
+		}
 	}
 
 	public static void setUnoptimizedFunctionCalls(StatementBlock sb) {

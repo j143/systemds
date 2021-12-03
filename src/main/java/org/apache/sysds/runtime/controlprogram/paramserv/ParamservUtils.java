@@ -19,11 +19,17 @@
 
 package org.apache.sysds.runtime.controlprogram.paramserv;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map.Entry;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.spark.Partitioner;
-import org.apache.spark.api.java.JavaPairRDD;
-import org.apache.sysds.api.DMLScript;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.conf.ConfigurationManager;
@@ -31,10 +37,8 @@ import org.apache.sysds.hops.Hop;
 import org.apache.sysds.hops.MultiThreadedHop;
 import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.hops.recompile.Recompiler;
-import org.apache.sysds.lops.LopProperties;
 import org.apache.sysds.parser.DMLProgram;
 import org.apache.sysds.parser.DMLTranslator;
-import org.apache.sysds.parser.Statement;
 import org.apache.sysds.parser.StatementBlock;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.ForProgramBlock;
@@ -42,6 +46,7 @@ import org.apache.sysds.runtime.controlprogram.FunctionProgramBlock;
 import org.apache.sysds.runtime.controlprogram.IfProgramBlock;
 import org.apache.sysds.runtime.controlprogram.LocalVariableMap;
 import org.apache.sysds.runtime.controlprogram.ParForProgramBlock;
+import org.apache.sysds.runtime.controlprogram.ParForProgramBlock.POptMode;
 import org.apache.sysds.runtime.controlprogram.Program;
 import org.apache.sysds.runtime.controlprogram.ProgramBlock;
 import org.apache.sysds.runtime.controlprogram.WhileProgramBlock;
@@ -50,30 +55,14 @@ import org.apache.sysds.runtime.controlprogram.caching.FrameObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContextFactory;
-import org.apache.sysds.runtime.controlprogram.context.SparkExecutionContext;
-import org.apache.sysds.runtime.controlprogram.paramserv.dp.DataPartitionerSparkAggregator;
-import org.apache.sysds.runtime.controlprogram.paramserv.dp.DataPartitionerSparkMapper;
-import org.apache.sysds.runtime.controlprogram.parfor.stat.Timing;
 import org.apache.sysds.runtime.functionobjects.Plus;
 import org.apache.sysds.runtime.instructions.cp.Data;
 import org.apache.sysds.runtime.instructions.cp.ListObject;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
-import org.apache.sysds.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysds.runtime.matrix.operators.BinaryOperator;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.runtime.meta.MetaDataFormat;
 import org.apache.sysds.runtime.util.ProgramConverter;
-import org.apache.sysds.utils.Statistics;
-import scala.Tuple2;
-
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map.Entry;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 public class ParamservUtils {
 
@@ -210,12 +199,39 @@ public class ParamservUtils {
 		MatrixBlock sample = MatrixBlock.sampleOperations(numEntries, numEntries, false, seed);
 
 		// Combine the sequence and sample as a table
-		return seq.ctableSeqOperations(sample, 1.0,
-			new MatrixBlock(numEntries, numEntries, true));
+		return seq.ctableSeqOperations(sample, 1.0, new MatrixBlock(numEntries, numEntries, true));
+	}
+
+	/**
+	 * Generates a matrix which when left multiplied with the input matrix will subsample
+	 * @param nsamples number of samples
+	 * @param nrows number of rows in input matrix
+	 * @param seed seed used to generate random number
+	 * @return subsample matrix
+	 */
+	public static MatrixBlock generateSubsampleMatrix(int nsamples, int nrows, long seed) {
+		MatrixBlock seq = new MatrixBlock(nsamples, nrows, false);
+		// No replacement to preserve as much of the original data as possible
+		MatrixBlock sample = MatrixBlock.sampleOperations(nrows, nsamples, false, seed);
+		return seq.ctableSeqOperations(sample, 1.0, new MatrixBlock(nsamples, nrows, true), false);
+	}
+
+	/**
+	 * Generates a matrix which when left multiplied with the input matrix will replicate n data rows
+	 * @param nsamples number of samples
+	 * @param nrows number of rows in input matrix
+	 * @param seed seed used to generate random number
+	 * @return replication matrix
+	 */
+	public static MatrixBlock generateReplicationMatrix(int nsamples, int nrows, long seed) {
+		MatrixBlock seq = new MatrixBlock(nsamples, nrows, false);
+		// Replacement set to true to provide random replication
+		MatrixBlock sample = MatrixBlock.sampleOperations(nrows, nsamples, true, seed);
+		return seq.ctableSeqOperations(sample, 1.0, new MatrixBlock(nsamples, nrows, true), false);
 	}
 
 	public static ExecutionContext createExecutionContext(ExecutionContext ec,
-	  	LocalVariableMap varsMap, String updFunc, String aggFunc, int k)
+		LocalVariableMap varsMap, String updFunc, String aggFunc, int k)
 	{
 		return createExecutionContext(ec, varsMap, updFunc, aggFunc, k, false);
 	}
@@ -228,7 +244,8 @@ public class ParamservUtils {
 		// 1. Recompile the internal program blocks 
 		recompileProgramBlocks(k, prog.getProgramBlocks(), forceExecTypeCP);
 		// 2. Recompile the imported function blocks
-		prog.getFunctionProgramBlocks(false)
+		boolean opt = prog.getFunctionProgramBlocks(false).isEmpty();
+		prog.getFunctionProgramBlocks(opt)
 			.forEach((fname, fvalue) -> recompileProgramBlocks(k, fvalue.getChildBlocks(), forceExecTypeCP));
 
 		// 3. Copy all functions 
@@ -246,11 +263,12 @@ public class ParamservUtils {
 	
 	private static Program copyProgramFunctions(Program prog) {
 		Program newProg = new Program(prog.getDMLProg());
-		for( Entry<String, FunctionProgramBlock> e : prog.getFunctionProgramBlocks(false).entrySet() ) {
+		boolean opt = prog.getFunctionProgramBlocks(false).isEmpty();
+		for( Entry<String, FunctionProgramBlock> e : prog.getFunctionProgramBlocks(opt).entrySet() ) {
 			String[] parts = DMLProgram.splitFunctionKey(e.getKey());
 			FunctionProgramBlock fpb = ProgramConverter
 				.createDeepCopyFunctionProgramBlock(e.getValue(), new HashSet<>(), new HashSet<>());
-			newProg.addFunctionProgramBlock(parts[0], parts[1], fpb, false);
+			newProg.addFunctionProgramBlock(parts[0], parts[1], fpb, opt);
 		}
 		return newProg;
 	}
@@ -280,8 +298,12 @@ public class ParamservUtils {
 		for (ProgramBlock pb : pbs) {
 			if (pb instanceof ParForProgramBlock) {
 				ParForProgramBlock pfpb = (ParForProgramBlock) pb;
-				pfpb.setDegreeOfParallelism(k);
-				recompiled |= rAssignParallelismAndRecompile(pfpb.getChildBlocks(), 1, recompiled, forceExecTypeCP);
+				if( !pfpb.isDegreeOfParallelismFixed() ) {
+					pfpb.setDegreeOfParallelism(k);
+					if( k == 1 )
+						pfpb.setOptimizationMode(POptMode.NONE);
+					recompiled |= rAssignParallelismAndRecompile(pfpb.getChildBlocks(), 1, recompiled, forceExecTypeCP);
+				}
 			} else if (pb instanceof ForProgramBlock) {
 				recompiled |= rAssignParallelismAndRecompile(((ForProgramBlock) pb).getChildBlocks(), k, recompiled, forceExecTypeCP);
 			} else if (pb instanceof WhileProgramBlock) {
@@ -301,7 +323,7 @@ public class ParamservUtils {
 			// Recompile the program block
 			if (recompiled) {
 				if(forceExecTypeCP)
-					Recompiler.rRecompileProgramBlock2Forced(pb, pb.getThreadID(), new HashSet<>(), LopProperties.ExecType.CP);
+					Recompiler.rRecompileProgramBlock2Forced(pb, pb.getThreadID(), new HashSet<>(), ExecType.CP);
 				else
 					Recompiler.recompileProgramBlockInstructions(pb);
 			}
@@ -339,82 +361,6 @@ public class ParamservUtils {
 		return left.append(right, new MatrixBlock());
 	}
 
-	/**
-	 * Assemble the matrix of features and labels according to the rowID
-	 *
-	 * @param featuresRDD indexed features matrix block
-	 * @param labelsRDD indexed labels matrix block
-	 * @return Assembled rdd with rowID as key while matrix of features and labels as value (rowID {@literal ->} features, labels)
-	 */
-	public static JavaPairRDD<Long, Tuple2<MatrixBlock, MatrixBlock>> assembleTrainingData(JavaPairRDD<MatrixIndexes, MatrixBlock> featuresRDD, JavaPairRDD<MatrixIndexes, MatrixBlock> labelsRDD) {
-		JavaPairRDD<Long, MatrixBlock> fRDD = groupMatrix(featuresRDD);
-		JavaPairRDD<Long, MatrixBlock> lRDD = groupMatrix(labelsRDD);
-		//TODO Add an additional physical operator which broadcasts the labels directly (broadcast join with features) if certain memory budgets are satisfied
-		return fRDD.join(lRDD);
-	}
-
-	private static JavaPairRDD<Long, MatrixBlock> groupMatrix(JavaPairRDD<MatrixIndexes, MatrixBlock> rdd) {
-		//TODO could use join and aggregation to avoid unnecessary shuffle introduced by reduceByKey
-		return rdd.mapToPair(input -> new Tuple2<>(input._1.getRowIndex(), new Tuple2<>(input._1.getColumnIndex(), input._2)))
-			.aggregateByKey(new LinkedList<Tuple2<Long, MatrixBlock>>(),
-				(list, input) -> {
-					list.add(input);
-					return list;
-				}, 
-				(l1, l2) -> {
-					l1.addAll(l2);
-					l1.sort((o1, o2) -> o1._1.compareTo(o2._1));
-					return l1;
-				})
-			.mapToPair(input -> {
-				LinkedList<Tuple2<Long, MatrixBlock>> list = input._2;
-				MatrixBlock result = list.get(0)._2;
-				for (int i = 1; i < list.size(); i++) {
-					result = ParamservUtils.cbindMatrix(result, list.get(i)._2);
-				}
-				return new Tuple2<>(input._1, result);
-			});
-	}
-
-	@SuppressWarnings("unchecked")
-	public static JavaPairRDD<Integer, Tuple2<MatrixBlock, MatrixBlock>> doPartitionOnSpark(SparkExecutionContext sec, MatrixObject features, MatrixObject labels, Statement.PSScheme scheme, int workerNum) {
-		Timing tSetup = DMLScript.STATISTICS ? new Timing(true) : null;
-		// Get input RDD
-		JavaPairRDD<MatrixIndexes, MatrixBlock> featuresRDD = (JavaPairRDD<MatrixIndexes, MatrixBlock>)
-			sec.getRDDHandleForMatrixObject(features, FileFormat.BINARY);
-		JavaPairRDD<MatrixIndexes, MatrixBlock> labelsRDD = (JavaPairRDD<MatrixIndexes, MatrixBlock>)
-			sec.getRDDHandleForMatrixObject(labels, FileFormat.BINARY);
-
-		DataPartitionerSparkMapper mapper = new DataPartitionerSparkMapper(scheme, workerNum, sec, (int) features.getNumRows());
-		JavaPairRDD<Integer, Tuple2<MatrixBlock, MatrixBlock>> result = ParamservUtils
-			.assembleTrainingData(featuresRDD, labelsRDD) // Combine features and labels into a pair (rowBlockID => (features, labels))
-			.flatMapToPair(mapper) // Do the data partitioning on spark (workerID => (rowBlockID, (single row features, single row labels))
-			// Aggregate the partitioned matrix according to rowID for each worker
-			// i.e. (workerID => ordered list[(rowBlockID, (single row features, single row labels)]
-			.aggregateByKey(new LinkedList<Tuple2<Long, Tuple2<MatrixBlock, MatrixBlock>>>(), new Partitioner() {
-				private static final long serialVersionUID = -7937781374718031224L;
-				@Override
-				public int getPartition(Object workerID) {
-					return (int) workerID;
-				}
-				@Override
-				public int numPartitions() {
-					return workerNum;
-				}
-			}, (list, input) -> {
-				list.add(input);
-				return list;
-			}, (l1, l2) -> {
-				l1.addAll(l2);
-				l1.sort((o1, o2) -> o1._1.compareTo(o2._1));
-				return l1;
-			})
-			.mapToPair(new DataPartitionerSparkAggregator(features.getNumColumns(), labels.getNumColumns()));
-
-		if (DMLScript.STATISTICS)
-			Statistics.accPSSetupTime((long) tSetup.stop());
-		return result;
-	}
 
 	/**
 	 * Accumulate the given gradients into the accrued gradients
@@ -449,5 +395,40 @@ public class ParamservUtils {
 		if (cleanup)
 			ParamservUtils.cleanupListObject(gradients);
 		return accGradients;
+	}
+
+	/**
+	 * Accumulate the given models into the accrued accrueModels
+	 *
+	 * @param accModels accrued models list object
+	 * @param model given models list object
+	 * @param cleanup clean up the given models list object
+	 * @return new accrued models list object
+	 */
+	public static ListObject accrueModels(ListObject accModels, ListObject model, boolean cleanup) {
+		return accrueModels(accModels, model, false, cleanup);
+	}
+
+	/**
+	 * Accumulate the given models into the accrued models
+	 *
+	 * @param accModels accrued models list object
+	 * @param model given models list object
+	 * @param par parallel execution
+	 * @param cleanup clean up the given models list object
+	 * @return new accrued models list object
+	 */
+	public static ListObject accrueModels(ListObject accModels, ListObject model, boolean par, boolean cleanup) {
+		if (accModels == null)
+			return ParamservUtils.copyList(model, cleanup);
+		IntStream range = IntStream.range(0, accModels.getLength());
+		(par ? range.parallel() : range).forEach(i -> {
+			MatrixBlock mb1 = ((MatrixObject) accModels.getData().get(i)).acquireReadAndRelease();
+			MatrixBlock mb2 = ((MatrixObject) model.getData().get(i)).acquireReadAndRelease();
+			mb1.binaryOperationsInPlace(new BinaryOperator(Plus.getPlusFnObject()), mb2);
+		});
+		if (cleanup)
+			ParamservUtils.cleanupListObject(model);
+		return accModels;
 	}
 }

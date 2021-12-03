@@ -47,7 +47,7 @@ import org.apache.sysds.runtime.matrix.operators.AggregateUnaryOperator;
  * and with that acceptable. 
  * 
  */
-public class RDDAggregateUtils 
+public class RDDAggregateUtils
 {	
 	//internal configuration to use tree aggregation (treeReduce w/ depth=2),
 	//this is currently disabled because it was 2x slower than a simple
@@ -630,6 +630,10 @@ public class RDDAggregateUtils
 			else if( arg1.getNumRows() == 0 && arg1.getNumColumns() == 0 ) {
 				return arg0;
 			}
+			
+			//early-abort (without dense correction allocation)
+			if( _op.sparseSafe && (arg0.isEmpty() | arg1.isEmpty()) )
+				return arg1.isEmpty() ? arg0 : arg1;
 			
 			//create correction block (on demand)
 			if( _op.existsCorrection() && _corr == null ) {

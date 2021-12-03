@@ -26,8 +26,8 @@ import org.apache.sysds.common.Types.Direction;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.hops.AggBinaryOp.SparkAggType;
 import org.apache.sysds.hops.HopsException;
-import org.apache.sysds.lops.LopProperties.ExecType;
-
+import org.apache.sysds.common.Types.ExecType;
+import org.apache.sysds.runtime.instructions.InstructionUtils;
 
 /**
  * Lop to perform a partial aggregation. It was introduced to do some initial
@@ -181,6 +181,11 @@ public class PartialAggregate extends Lop
 		}
 		return loc;
 	}
+	
+	@Override
+	public SparkAggType getAggType() {
+		return _aggtype;
+	}
 
 	public void setDimensionsBasedOnDirection(long dim1, long dim2, long blen) {
 		setDimensionsBasedOnDirection(this, dim1, dim2, blen, direction);
@@ -217,26 +222,22 @@ public class PartialAggregate extends Lop
 	@Override
 	public String getInstructions(String input1, String output) 
 	{
-		StringBuilder sb = new StringBuilder();
-		sb.append( getExecType() );
+		String ret = InstructionUtils.concatOperands(
+			getExecType().name(), getOpcode(),
+			getInputs().get(0).prepInputOperand(input1),
+			prepOutputOperand(output));
+
+		if ( getExecType() == ExecType.SPARK )
+			ret = InstructionUtils.concatOperands(ret, _aggtype.name());
+		else if ( getExecType() == ExecType.CP || getExecType() == ExecType.FED ){
+			ret = InstructionUtils.concatOperands(ret, Integer.toString(_numThreads));
+			if ( getOpcode().equalsIgnoreCase("uarimin") || getOpcode().equalsIgnoreCase("uarimax") )
+				ret = InstructionUtils.concatOperands(ret, "1");
+			if ( getExecType() == ExecType.FED )
+				ret = InstructionUtils.concatOperands(ret, _fedOutput.name());
+		}
 		
-		sb.append( OPERAND_DELIMITOR );
-		sb.append( getOpcode() );
-		
-		sb.append( OPERAND_DELIMITOR );
-		sb.append( getInputs().get(0).prepInputOperand(input1) );
-		
-		sb.append( OPERAND_DELIMITOR );
-		sb.append( prepOutputOperand(output) );
-		
-		//exec-type specific attributes
-		sb.append( OPERAND_DELIMITOR );
-		if( getExecType() == ExecType.SPARK )
-			sb.append( _aggtype );
-		else if( getExecType() == ExecType.CP )
-			sb.append( _numThreads );	
-		
-		return sb.toString();
+		return ret;
 	}
 
 	public static String getOpcode(AggOp op, Direction dir)

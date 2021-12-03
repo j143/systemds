@@ -20,7 +20,7 @@
 package org.apache.sysds.lops;
 
  
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
@@ -86,6 +86,13 @@ public class LeftIndex extends Lop
 		colL.addOutput(this);
 		colU.addOutput(this);
 		lps.setProperties(inputs, et);
+	}
+
+	@Override
+	public Lop getBroadcastInput() {
+		if (getExecType() != ExecType.SPARK || _type == LixCacheType.NONE)
+			return null;
+		return _type == LixCacheType.LEFT ? getInputs().get(0) : null;
 	}
 	
 	private String getOpcode() {

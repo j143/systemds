@@ -212,7 +212,7 @@ public class AggregateUnarySPInstruction extends UnarySPInstruction {
 		
 		@Override
 		public Tuple2<MatrixIndexes, MatrixBlock> call( Tuple2<MatrixIndexes, MatrixBlock> arg0 ) 
-			throws Exception 
+			throws Exception
 		{
 			MatrixIndexes ixIn = arg0._1();
 			MatrixBlock blkIn = arg0._2();
@@ -301,10 +301,7 @@ public class AggregateUnarySPInstruction extends UnarySPInstruction {
 			MatrixBlock blkOut = new MatrixBlock();
 			
 			//unary aggregate operation
-			arg0.aggregateUnaryOperations(_op, blkOut, _blen, _ix);
-			
-			//always drop correction since no aggregation
-			blkOut.dropLastRowsOrColumns(_op.aggOp.correction);
+			arg0.aggregateUnaryOperations(_op, blkOut, _blen, _ix, true);
 			
 			//output new tuple
 			return blkOut;

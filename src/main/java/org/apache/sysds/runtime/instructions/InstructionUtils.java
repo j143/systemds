@@ -22,10 +22,13 @@ package org.apache.sysds.runtime.instructions;
 import java.util.Arrays;
 import java.util.StringTokenizer;
 
+import org.apache.commons.lang.ArrayUtils;
 import org.apache.sysds.common.Types;
 import org.apache.sysds.common.Types.AggOp;
 import org.apache.sysds.common.Types.CorrectionLocationType;
+import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.Direction;
+import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.lops.Lop;
 import org.apache.sysds.lops.WeightedCrossEntropy;
 import org.apache.sysds.lops.WeightedCrossEntropyR;
@@ -37,7 +40,7 @@ import org.apache.sysds.lops.WeightedSquaredLoss;
 import org.apache.sysds.lops.WeightedSquaredLossR;
 import org.apache.sysds.lops.WeightedUnaryMM;
 import org.apache.sysds.lops.WeightedUnaryMMR;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.functionobjects.And;
 import org.apache.sysds.runtime.functionobjects.BitwAnd;
@@ -82,6 +85,7 @@ import org.apache.sysds.runtime.functionobjects.Builtin.BuiltinCode;
 import org.apache.sysds.runtime.instructions.cp.CPOperand;
 import org.apache.sysds.runtime.instructions.cp.CPInstruction.CPType;
 import org.apache.sysds.runtime.instructions.fed.FEDInstruction.FEDType;
+import org.apache.sysds.runtime.instructions.fed.FEDInstruction.FederatedOutput;
 import org.apache.sysds.runtime.instructions.gpu.GPUInstruction.GPUINSTRUCTION_TYPE;
 import org.apache.sysds.runtime.instructions.spark.SPInstruction.SPType;
 import org.apache.sysds.runtime.matrix.data.LibCommonsMath;
@@ -144,7 +148,10 @@ public class InstructionUtils
 	public static int checkNumFields( String[] parts, int... expected ) {
 		int numParts = parts.length;
 		int numFields = numParts - 1; //account for opcode
-		
+		return checkMatchingNumField(numFields, expected);
+	}
+
+	private static int checkMatchingNumField(int numFields, int... expected){
 		if (Arrays.stream(expected).noneMatch((i) -> numFields == i)) {
 			StringBuilder sb = new StringBuilder();
 			sb.append("checkNumFields() -- expected number (");
@@ -156,8 +163,13 @@ public class InstructionUtils
 			sb.append(") != is not equal to actual number (").append(numFields).append(").");
 			throw new DMLRuntimeException(sb.toString());
 		}
-		
 		return numFields;
+	}
+
+	public static int checkNumFields( String str, int... expected ) {
+		int numParts = str.split(Instruction.OPERAND_DELIM).length;
+		int numFields = numParts - 2; // -2 accounts for execType and opcode
+		return checkMatchingNumField(numFields, expected);
 	}
 
 	public static int checkNumFields( String str, int expected1, int expected2 ) {
@@ -193,7 +205,7 @@ public class InstructionUtils
 	
 	/**
 	 * Given an instruction string, this function strips-off the 
-	 * execution type (CP or MR) and returns the remaining parts, 
+	 * execution type (CP or SPARK) and returns the remaining parts, 
 	 * which include the opcode as well as the input and output operands.
 	 * Each returned part will have the datatype and valuetype associated
 	 * with the operand.
@@ -215,8 +227,13 @@ public class InstructionUtils
 	}
 	
 	public static ExecType getExecType( String str ) {
-		int ix = str.indexOf(Instruction.OPERAND_DELIM);
-		return ExecType.valueOf(str.substring(0, ix));
+		try{
+			int ix = str.indexOf(Instruction.OPERAND_DELIM);
+			return ExecType.valueOf(str.substring(0, ix));
+		}
+		catch(Exception e){
+			throw new DMLRuntimeException("Unable to extract Execution type from " + str, e);
+		}
 	}
 
 	public static String getOpCode( String str ) {
@@ -374,7 +391,7 @@ public class InstructionUtils
 		else if ( opcode.equalsIgnoreCase("uarmax") ) {
 			AggregateOperator agg = new AggregateOperator(Double.NEGATIVE_INFINITY, Builtin.getBuiltinFnObject("max"));
 			aggun = new AggregateUnaryOperator(agg, ReduceCol.getReduceColFnObject(), numThreads);
-		} 
+		}
 		else if (opcode.equalsIgnoreCase("uarimax") ) {
 			AggregateOperator agg = new AggregateOperator(Double.NEGATIVE_INFINITY, Builtin.getBuiltinFnObject("maxindex"), CorrectionLocationType.LASTCOLUMN);
 			aggun = new AggregateUnaryOperator(agg, ReduceCol.getReduceColFnObject(), numThreads);
@@ -382,7 +399,7 @@ public class InstructionUtils
 		else if ( opcode.equalsIgnoreCase("uarmin") ) {
 			AggregateOperator agg = new AggregateOperator(Double.POSITIVE_INFINITY, Builtin.getBuiltinFnObject("min"));
 			aggun = new AggregateUnaryOperator(agg, ReduceCol.getReduceColFnObject(), numThreads);
-		} 
+		}
 		else if (opcode.equalsIgnoreCase("uarimin") ) {
 			AggregateOperator agg = new AggregateOperator(Double.POSITIVE_INFINITY, Builtin.getBuiltinFnObject("minindex"), CorrectionLocationType.LASTCOLUMN);
 			aggun = new AggregateUnaryOperator(agg, ReduceCol.getReduceColFnObject(), numThreads);
@@ -396,6 +413,21 @@ public class InstructionUtils
 			aggun = new AggregateUnaryOperator(agg, ReduceRow.getReduceRowFnObject(), numThreads);
 		}
 		
+		return aggun;
+	}
+
+	public static AggregateUnaryOperator parseAggregateUnaryRowIndexOperator(String opcode, int numOutputs, int numThreads) {
+		AggregateUnaryOperator aggun = null;
+		AggregateOperator agg = null;
+		if (opcode.equalsIgnoreCase("uarimax") )
+			agg = new AggregateOperator(Double.NEGATIVE_INFINITY, Builtin.getBuiltinFnObject("maxindex"),
+				numOutputs == 1 ? CorrectionLocationType.LASTCOLUMN : CorrectionLocationType.NONE);
+
+		else if (opcode.equalsIgnoreCase("uarimin") )
+			agg = new AggregateOperator(Double.POSITIVE_INFINITY, Builtin.getBuiltinFnObject("minindex"),
+				numOutputs == 1 ? CorrectionLocationType.LASTCOLUMN : CorrectionLocationType.NONE);
+
+		aggun = new AggregateUnaryOperator(agg, ReduceCol.getReduceColFnObject(), numThreads);
 		return aggun;
 	}
 
@@ -573,13 +605,19 @@ public class InstructionUtils
 			return new BinaryOperator(Builtin.getBuiltinFnObject("dropInvalidType"));
 		else if( opcode.equalsIgnoreCase("dropInvalidLength"))
 			return new BinaryOperator(Builtin.getBuiltinFnObject("dropInvalidLength"));
+		else if( opcode.equalsIgnoreCase("valueSwap"))
+			return new BinaryOperator(Builtin.getBuiltinFnObject("valueSwap"));
 
 		throw new RuntimeException("Unknown binary opcode " + opcode);
 	}
 	
 	public static TernaryOperator parseTernaryOperator(String opcode) {
+		return parseTernaryOperator(opcode, 1);
+	}
+	
+	public static TernaryOperator parseTernaryOperator(String opcode, int numThreads) {
 		return new TernaryOperator(opcode.equals("+*") ? PlusMultiply.getFnObject() :
-			opcode.equals("-*") ? MinusMultiply.getFnObject() : IfElse.getFnObject());
+			opcode.equals("-*") ? MinusMultiply.getFnObject() : IfElse.getFnObject(), numThreads);
 	}
 	
 	/**
@@ -804,7 +842,9 @@ public class InstructionUtils
 			return new BinaryOperator(Builtin.getBuiltinFnObject("min"));
 		else if ( opcode.equalsIgnoreCase("dropInvalidLength") || opcode.equalsIgnoreCase("mapdropInvalidLength") )
 			return new BinaryOperator(Builtin.getBuiltinFnObject("dropInvalidLength"));
-		
+		else if ( opcode.equalsIgnoreCase("valueSwap") || opcode.equalsIgnoreCase("mapValueSwap") )
+			return new BinaryOperator(Builtin.getBuiltinFnObject("valueSwap"));
+
 		throw new DMLRuntimeException("Unknown binary opcode " + opcode);
 	}
 	
@@ -976,6 +1016,14 @@ public class InstructionUtils
 		}
 	}
 	
+	public static String createLiteralOperand(String val, ValueType vt) {
+		return InstructionUtils.concatOperandParts(val, DataType.SCALAR.name(), vt.name(), "true");
+	}
+
+	public static String createOperand(CPOperand operand) {
+		return InstructionUtils.concatOperandParts(operand.getName(), operand.getDataType().name(), operand.getValueType().name());
+	}
+
 	public static String replaceOperand(String instStr, int operand, String newValue) {
 		//split instruction and check for correctness
 		String[] parts = instStr.split(Lop.OPERAND_DELIMITOR);
@@ -987,6 +1035,16 @@ public class InstructionUtils
 		return concatOperands(parts);
 	}
 
+	public static String removeOperand(String instStr, int operand) {
+		//split instruction and check for correctness
+		String[] parts = instStr.split(Lop.OPERAND_DELIMITOR);
+		if( operand >= parts.length )
+			throw new DMLRuntimeException("Operand position "
+				+ operand + " exceeds the length of the instruction.");
+		//remove and reconstruct string
+		return concatOperands((String[]) ArrayUtils.remove(parts, operand));
+	}
+
 	public static String replaceOperandName(String instStr) {
 		String[] parts = instStr.split(Lop.OPERAND_DELIMITOR);
 		String oldName = parts[parts.length-1];
@@ -996,16 +1054,30 @@ public class InstructionUtils
 		parts[parts.length-1] = newName;
 		return concatOperands(parts);
 	}
-	
+
+	/**
+	 * Concat the inputs as operands to generate the instruction string.
+	 * The inputs are separated by the operand delimiter and appended
+	 * using a ThreadLocal StringBuilder.
+	 * @param inputs operand inputs given as strings
+	 * @return the instruction string with the given inputs concatenated
+	 */
 	public static String concatOperands(String... inputs) {
-		return concatOperandsWithDelim(Lop.OPERAND_DELIMITOR, inputs);
+		concatBaseOperandsWithDelim(Lop.OPERAND_DELIMITOR, inputs);
+		return _strBuilders.get().toString();
 	}
-	
+
+	/**
+	 * Concat the input parts with the value type delimiter.
+	 * @param inputs input operand parts as strings
+	 * @return concatenated input parts
+	 */
 	public static String concatOperandParts(String... inputs) {
-		return concatOperandsWithDelim(Instruction.VALUETYPE_PREFIX, inputs);
+		concatBaseOperandsWithDelim(Instruction.VALUETYPE_PREFIX, inputs);
+		return _strBuilders.get().toString();
 	}
-	
-	private static String concatOperandsWithDelim(String delim, String... inputs) {
+
+	private static void concatBaseOperandsWithDelim(String delim, String... inputs){
 		StringBuilder sb = _strBuilders.get();
 		sb.setLength(0); //reuse allocated space
 		for( int i=0; i<inputs.length-1; i++ ) {
@@ -1013,7 +1085,6 @@ public class InstructionUtils
 			sb.append(delim);
 		}
 		sb.append(inputs[inputs.length-1]);
-		return sb.toString();
 	}
 	
 	public static String concatStrings(String... inputs) {
@@ -1022,5 +1093,91 @@ public class InstructionUtils
 		for( int i=0; i<inputs.length; i++ )
 			sb.append(inputs[i]);
 		return sb.toString();
+	}
+
+	public static String constructTernaryString(String instString, CPOperand op1, CPOperand op2, CPOperand op3, CPOperand out) {
+		return concatOperands(constructBinaryInstString(instString, "ifelse", op1, op2, op3), createOperand(out));
+	}
+
+	public static String constructBinaryInstString(String instString, String opcode, CPOperand op1, CPOperand op2, CPOperand out) {
+		String[] parts = instString.split(Lop.OPERAND_DELIMITOR);
+		return InstructionUtils.concatOperands(parts[0], opcode, createOperand(op1), createOperand(op2), createOperand(out));
+	}
+
+	public static String constructUnaryInstString(String instString, String opcode, CPOperand op1, CPOperand out) {
+		String[] parts = instString.split(Lop.OPERAND_DELIMITOR);
+		return InstructionUtils.concatOperands(parts[0], opcode, createOperand(op1), createOperand(out));
+	}
+
+	/**
+	 * Prepare instruction string for sending in a FederatedRequest as a CP instruction.
+	 * This involves replacing the coordinator operand names with the worker operand names,
+	 * changing the execution type, and removing the federated output flag if necessary.
+	 * @param inst instruction string to prepare for federated request
+	 * @param varOldOut current output operand (to be replaced)
+	 * @param id new output operand (always a number)
+	 * @param varOldIn current input operand (to be replaced)
+	 * @param varNewIn new input operand names (always numbers)
+	 * @param rmFederatedOutput remove federated output flag
+	 * @return instruction string prepared for federated request
+	 */
+	public static String instructionStringFEDPrepare(String inst, CPOperand varOldOut, long id, CPOperand[] varOldIn, long[] varNewIn, boolean rmFederatedOutput){
+		String linst = replaceExecTypeWithCP(inst);
+		linst = replaceOutputOperand(linst, varOldOut, id);
+		linst = replaceInputOperand(linst, varOldIn, varNewIn);
+		if(rmFederatedOutput)
+			linst = removeFEDOutputFlag(linst);
+		return linst;
+	}
+
+	private static String replaceExecTypeWithCP(String inst){
+		return inst
+//			.replace(Types.ExecType.SPARK.name(), Types.ExecType.CP.name())
+			.replace(Types.ExecType.FED.name(), Types.ExecType.CP.name());
+	}
+
+	private static String replaceOutputOperand(String linst, CPOperand varOldOut, long id){
+		return replaceOperand(linst, varOldOut, Long.toString(id));
+	}
+
+	private static String replaceInputOperand(String linst, CPOperand[] varOldIn, long[] varNewIn){
+		for(int i=0; i<varOldIn.length; i++)
+			if( varOldIn[i] != null ) {
+				linst = replaceOperand(linst, varOldIn[i], Long.toString(varNewIn[i]));
+				linst = linst.replace("="+varOldIn[i].getName(), "="+varNewIn[i]); //parameterized
+			}
+		return linst;
+	}
+
+	/**
+	 * Removes federated output flag from the end of the instruction string if the flag is present.
+	 * @param linst instruction string
+	 * @return instruction string with no federated output flag
+	 */
+	public static String removeFEDOutputFlag(String linst){
+		int lastOperandStartIndex = linst.lastIndexOf(Lop.OPERAND_DELIMITOR);
+		String lastOperand = linst.substring(lastOperandStartIndex);
+		if ( containsFEDOutputFlag(lastOperand) )
+			return linst.substring(0, lastOperandStartIndex);
+		else return linst;
+	}
+
+	/**
+	 * Checks whether the given operand string contains a federated output flag
+	 * @param operandString which is checked for federated output flag
+	 * @return true if the given operand string contains a federated output flag
+	 */
+	private static boolean containsFEDOutputFlag(String operandString){
+		for (FederatedOutput fedOutput : FederatedOutput.values()){
+			if ( operandString.contains(fedOutput.name()) )
+				return true;
+		}
+		return false;
+	}
+
+	private static String replaceOperand(String linst, CPOperand oldOperand, String newOperandName){
+		return linst.replace(
+			Lop.OPERAND_DELIMITOR+oldOperand.getName()+Lop.DATATYPE_PREFIX,
+			Lop.OPERAND_DELIMITOR+newOperandName+Lop.DATATYPE_PREFIX);
 	}
 }

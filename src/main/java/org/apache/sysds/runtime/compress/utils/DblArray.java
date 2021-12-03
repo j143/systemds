@@ -26,6 +26,7 @@ import java.util.Arrays;
  */
 public class DblArray {
 	private double[] _arr;
+	private int _hash;
 
 	public DblArray() {
 		_arr = null;
@@ -35,30 +36,49 @@ public class DblArray {
 		_arr = arr;
 	}
 
+	private DblArray(double[] arr, int hash) {
+		_arr = arr;
+		_hash = hash;
+	}
+
 	public DblArray(DblArray that) {
-		this(Arrays.copyOf(that._arr, that._arr.length));
+		this(Arrays.copyOf(that._arr, that._arr.length), that.hashCode());
 	}
 
 	public double[] getData() {
 		return _arr;
 	}
 
+	public void resetHash() {
+		_hash = 0;
+	}
+
+	public boolean isEmpty() {
+		return _arr == null;
+	}
+
 	@Override
 	public int hashCode() {
-		return _arr == null ? 0 : Arrays.hashCode(_arr);
+		if(_hash != 0 || _arr == null)
+			return _hash;
+		int h = Arrays.hashCode(_arr);
+		h ^= (h >>> 20) ^ (h >>> 12);
+		h = h ^ (h >>> 7) ^ (h >>> 4);
+		_hash = h;
+		return _hash;
+	}
+
+	public boolean equals(DblArray that) {
+		return this.hashCode() == that.hashCode() && Arrays.equals(this._arr, that._arr);
 	}
 
 	@Override
 	public boolean equals(Object o) {
-		return(o instanceof DblArray && Arrays.equals(_arr, ((DblArray) o)._arr));
+		return o instanceof DblArray && this.equals((DblArray) o);
 	}
 
 	@Override
 	public String toString() {
 		return Arrays.toString(_arr);
-	}
-
-	public static boolean isZero(DblArray val) {
-		return val._arr == null;
 	}
 }

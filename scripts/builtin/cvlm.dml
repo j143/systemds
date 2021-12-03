@@ -22,7 +22,7 @@
 m_cvlm = function(Matrix[Double] X, Matrix[Double] y, Integer k, Integer icpt = 0, Double reg = 1e-7) return (Matrix[Double] y_predict, Matrix[Double] allbeta) 
 {
   M = nrow(X);
-  lim = as.integer(M/k);
+  lim = floor(as.integer(M/k));
   y_predict = y;
   allbeta = matrix(0, rows=k, cols=ncol(X));
 
@@ -36,13 +36,18 @@ m_cvlm = function(Matrix[Double] X, Matrix[Double] y, Integer k, Integer icpt = 
       trainSet = X[testE+1:M,];
       trainRes = y[testE+1:M,];
     }
+    else if(i == k)
+    {
+      trainSet = X[1:testS-1,];
+      trainRes = y[1:testS-1,];
+    }
     else {
       trainSet = rbind(X[1:testS-1,], X[testE+1:M,]);
       trainRes = rbind(y[1:testS-1,], y[testE+1:M,]);
     }
 
     beta = lm(X=trainSet, y=trainRes, icpt=icpt, reg=reg);
-    pred = lmpredict(X=testSet, w=beta, icpt=icpt);
+    pred = lmPredict(X=testSet, B=beta, ytest=matrix(0,1,1), icpt=icpt);
     y_predict[testS:testE,] = pred;
     allbeta[i,] = t(beta);
   }

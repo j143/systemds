@@ -25,6 +25,7 @@ import java.util.Arrays;
 
 import org.apache.sysds.runtime.util.SortUtils;
 import org.apache.sysds.runtime.util.UtilFunctions;
+import org.apache.sysds.utils.MemoryEstimates;
 
 /**
  * SparseBlock implementation that realizes a traditional 'compressed sparse row'
@@ -60,6 +61,13 @@ public class SparseBlockCSR extends SparseBlock
 		_indexes = new int[capacity];
 		_values = new double[capacity];
 		_size = 0;
+	}
+
+	public SparseBlockCSR(int rlen, int capacity, int size){
+		_ptr = new int[rlen+1]; //ix0=0
+		_indexes = new int[capacity];
+		_values = new double[capacity];
+		_size = size;
 	}
 	
 	public SparseBlockCSR(int[] rowPtr, int[] colInd, double[] values, int nnz){
@@ -263,14 +271,14 @@ public class SparseBlockCSR extends SparseBlock
 	 * @param sparsity sparsity ratio
 	 * @return memory estimate
 	 */
-	public static long estimateMemory(long nrows, long ncols, double sparsity) {
+	public static long estimateSizeInMemory(long nrows, long ncols, double sparsity) {
 		double lnnz = Math.max(INIT_CAPACITY, Math.ceil(sparsity*nrows*ncols));
 		
 		//32B overhead per array, int arr in nrows, int/double arr in nnz 
-		double size = 16 + 4;        //object + int field
-		size += 24 + (nrows+1) * 4d; //ptr array (row pointers)
-		size += 24 + lnnz * 4d;      //indexes array (column indexes)
-		size += 24 + lnnz * 8d;      //values array (non-zero values)
+		double size = 16 + 4 + 4;                            //object + int field + padding
+		size += MemoryEstimates.intArrayCost(nrows+1);       //ptr array (row pointers)
+		size += MemoryEstimates.intArrayCost((long) lnnz);   //indexes array (column indexes)
+		size += MemoryEstimates.doubleArrayCost((long) lnnz);//values array (non-zero values)
 		
 		//robustness for long overflows
 		return (long) Math.min(size, Long.MAX_VALUE);
@@ -856,20 +864,24 @@ public class SparseBlockCSR extends SparseBlock
 		sb.append(", nnz=");
 		sb.append(size());
 		sb.append("\n");
-		for( int i=0; i<numRows(); i++ ) {
-			sb.append("row +");
-			sb.append(i);
-			sb.append(": ");
-			//append row
-			int pos = pos(i);
-			int len = size(i);
-			for(int j=pos; j<pos+len; j++) {
-				sb.append(_indexes[j]);
+		for(int i = 0; i < numRows(); i++) {
+			// append row
+			final int pos = pos(i);
+			final int len = size(i);
+			if(pos < pos + len) {
+
+				sb.append("row +");
+				sb.append(i);
 				sb.append(": ");
-				sb.append(_values[j]);
-				sb.append("\t");
+
+				for(int j = pos; j < pos + len; j++) {
+					sb.append(_indexes[j]);
+					sb.append(": ");
+					sb.append(_values[j]);
+					sb.append("\t");
+				}
+				sb.append("\n");
 			}
-			sb.append("\n");
 		}
 		
 		return sb.toString();

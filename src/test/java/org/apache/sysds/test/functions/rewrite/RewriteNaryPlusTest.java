@@ -23,7 +23,7 @@ import org.junit.Assert;
 import org.junit.Test;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -104,7 +104,7 @@ public class RewriteNaryPlusTest extends AutomatedTestBase
 			
 			//compare output
 			Double ret = readDMLMatrixFromOutputDir("R").get(new CellIndex(1,1));
-			Assert.assertEquals(new Double(100000), ret);
+			Assert.assertEquals(Double.valueOf(100000), ret);
 			
 			//check for applied nary plus
 			String prefix = et == ExecType.SPARK ? "sp_" : "";

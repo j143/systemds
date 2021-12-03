@@ -33,6 +33,10 @@ import org.apache.sysds.hops.IndexingOp;
 import org.apache.sysds.hops.LiteralOp;
 import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.hops.rewrite.HopRewriteUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
 import org.apache.sysds.common.Builtins;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.OpOp1;
@@ -60,6 +64,9 @@ import org.apache.sysds.runtime.util.UtilFunctions;
  */
 public class ParForStatementBlock extends ForStatementBlock 
 {
+	private static final boolean LDEBUG = false; //internal local debug level
+	protected static final Log LOG = LogFactory.getLog(ParForStatementBlock.class.getName());
+	
 	//external parameter names 
 	private static HashSet<String> _paramNames;
 	public static final String CHECK            = "check";       //run loop dependency analysis
@@ -140,6 +147,12 @@ public class ParForStatementBlock extends ForStatementBlock
 		if( USE_FN_CACHE ) {
 			_fncache = new HashMap<>();
 		}
+		
+		// for internal debugging only
+		if( LDEBUG ) {
+			Logger.getLogger("org.apache.sysds.parser.ParForStatementBlock")
+				.setLevel(Level.TRACE);
+		}
 	}
 	
 	public ParForStatementBlock() {
@@ -155,6 +168,11 @@ public class ParForStatementBlock extends ForStatementBlock
 
 	public ArrayList<ResultVar> getResultVariables() {
 		return _resultVars;
+	}
+	
+	public void setResultVariables(ArrayList<ResultVar> rvars) {
+		_resultVars.clear();
+		_resultVars.addAll(rvars);
 	}
 	
 	private void addToResultVariablesNoDup( String var, boolean accum ) {
@@ -210,6 +228,12 @@ public class ParForStatementBlock extends ForStatementBlock
 					else //default case
 						params.put(key, _paramDefaults.get(key));
 				}
+			
+			//keep info if forced into remote exec
+			if( constrained && params.containsKey(EXEC_MODE) )
+				dmlProg.setContainsRemoteParfor(
+					params.get(EXEC_MODE).equals(PExecMode.REMOTE_SPARK.name()) ||
+					params.get(EXEC_MODE).equals(PExecMode.REMOTE_SPARK_DP.name()));
 		}
 		else {
 			//set all defaults
@@ -653,7 +677,7 @@ public class ParForStatementBlock extends ForStatementBlock
 						for(DataIdentifier write : datsUpdated) {
 							if( !c._var.equals( write.getName() ) ) continue;
 							
-							if( cdt != DataType.MATRIX && cdt != DataType.LIST ) {
+							if( cdt != DataType.MATRIX && cdt != DataType.FRAME && cdt != DataType.LIST ) {
 								//cannot infer type, need to exit (conservative approach)
 								throw new LanguageException("PARFOR loop dependency analysis: cannot check "
 									+ "for dependencies due to unknown datatype of var '"+c._var+"': "+cdt.name()+".");
@@ -692,6 +716,7 @@ public class ParForStatementBlock extends ForStatementBlock
 								return;
 						}
 						else if( (cdt == DataType.MATRIX && dat2dt == DataType.MATRIX)
+							|| (cdt == DataType.FRAME && dat2dt == DataType.FRAME )
 							|| (cdt == DataType.LIST && dat2dt == DataType.LIST ) )
 						{
 							boolean invalid = false;
@@ -908,7 +933,15 @@ public class ParForStatementBlock extends ForStatementBlock
 						incr = ((IntIdentifier)ip.getIncrementExpr()).getValue();
 					else 
 						incr = ( low <= up ) ? 1 : -1;
-
+					
+					//normalize bounds to positive increment (for dependency analysis only)
+					if( incr < 0 ) {
+						long tmp = low;
+						low = up;
+						up = tmp;
+						incr *= -1; //positive increment
+					}
+					
 					_bounds._lower.put(ip.getIterVar()._name, low);
 					_bounds._upper.put(ip.getIterVar()._name, up);
 					_bounds._increment.put(ip.getIterVar()._name, incr);
@@ -1093,7 +1126,7 @@ public class ParForStatementBlock extends ForStatementBlock
 			//min/max bound 
 			int len = Math.max(f1._b.length, f2._b.length);
 			boolean invalid = false;
-			for( int i=0; i<len; i++ ) 
+			for( int i=0; i<len; i++ )
 			{
 				String var=(f1._b.length>i) ? f1._vars[i] : f2._vars[i];
 				if( !_bounds._lower.containsKey(var) || !_bounds._upper.containsKey(var) ) {

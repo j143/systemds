@@ -391,7 +391,7 @@ public class FrameConverterTest extends AutomatedTestBase
 			}
 	}
 	
-	@SuppressWarnings({ "unchecked", "resource", "cast" })
+	@SuppressWarnings({ "unchecked"})
 	private static void runConverter(ConvType type, MatrixCharacteristics mc, MatrixCharacteristics mcMatrix,
 		List<ValueType> schema, String fnameIn, String fnameOut) throws IOException
 	{
@@ -408,7 +408,7 @@ public class FrameConverterTest extends AutomatedTestBase
 				JavaPairRDD<LongWritable,Text> rddIn = (JavaPairRDD<LongWritable,Text>) sc
 					.hadoopFile(fnameIn, iinfo.inputFormatClass, iinfo.keyClass, iinfo.valueClass);
 				JavaPairRDD<LongWritable, FrameBlock> rddOut = FrameRDDConverterUtils
-						.csvToBinaryBlock(sc, rddIn, mc, null, false, separator, false, 0, UtilFunctions.defaultNaString)
+						.csvToBinaryBlock(sc, rddIn, mc, null, false, separator, false, 0, null)
 						.mapToPair(new LongFrameToLongWritableFrameFunction());
 				rddOut.saveAsHadoopFile(fnameOut, LongWritable.class, FrameBlock.class, oinfo.outputFormatClass);
 				break;

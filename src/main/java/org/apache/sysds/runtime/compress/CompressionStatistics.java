@@ -23,42 +23,39 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.sysds.runtime.compress.colgroup.ColGroup;
-import org.apache.sysds.runtime.compress.colgroup.ColGroup.CompressionType;
+import org.apache.sysds.runtime.compress.colgroup.AColGroup;
 
+/**
+ * Compression Statistics contain the main information gathered from the compression, such as sizes of the original
+ * matrix, vs the compressed representation at different stages of the compression.
+ */
 public class CompressionStatistics {
 
-	private double lastPhase;
-	public double ratio;
-	public long originalSize;
-	public long estimatedSizeColGroups;
+	// sizes while compressing
+	public long estimatedSizeCoCoded;
 	public long estimatedSizeCols;
+	public long compressedInitialSize;
+
+	// sizes before compression
+	public long originalSize;
+	public long denseSize;
+
+	// compressed size
 	public long size;
 
-	private Map<CompressionType, int[]> colGroupCounts;
-
-	public CompressionStatistics() {
-	}
-
-	public void setNextTimePhase(double time) {
-		lastPhase = time;
-	}
-
-	public double getLastTimePhase() {
-		return lastPhase;
-	}
+	private Map<String, int[]> colGroupCounts;
 
 	/**
-	 * Set array of counts regarding col group types. 
+	 * Set array of counts regarding col group types.
 	 * 
 	 * The position corresponds with the enum ordinal.
 	 * 
 	 * @param colGroups list of ColGroups used in compression.
 	 */
-	public void setColGroupsCounts(List<ColGroup> colGroups) {
-		HashMap<CompressionType, int[]> ret = new HashMap<>();
-		for(ColGroup c : colGroups) {
-			CompressionType ct = c.getCompType();
+	protected void setColGroupsCounts(List<AColGroup> colGroups) {
+		HashMap<String, int[]> ret = new HashMap<>();
+		for(AColGroup c : colGroups) {
+			String ct = c.getClass().getSimpleName();
 			int colCount = c.getNumCols();
 			int[] values;
 			if(ret.containsKey(ct)) {
@@ -74,34 +71,48 @@ public class CompressionStatistics {
 		this.colGroupCounts = ret;
 	}
 
-	public Map<CompressionType, int[]> getColGroups() {
+	public Map<String, int[]> getColGroups() {
 		return colGroupCounts;
 	}
 
 	public String getGroupsTypesString() {
 		StringBuilder sb = new StringBuilder();
 
-		for(CompressionType ctKey : colGroupCounts.keySet()) {
+		for(String ctKey : colGroupCounts.keySet())
 			sb.append(ctKey + ":" + colGroupCounts.get(ctKey)[0] + " ");
-		}
+
 		return sb.toString();
 	}
 
 	public String getGroupsSizesString() {
 		StringBuilder sb = new StringBuilder();
-		for(CompressionType ctKey : colGroupCounts.keySet()) {
 
+		for(String ctKey : colGroupCounts.keySet())
 			sb.append(ctKey + ":" + colGroupCounts.get(ctKey)[1] + " ");
-		}
+
 		return sb.toString();
+	}
+
+	public double getRatio() {
+		return size == 0.0 ? Double.POSITIVE_INFINITY : (double) originalSize / size;
+	}
+
+	public double getDenseRatio() {
+		return size == 0.0 ? Double.POSITIVE_INFINITY : (double) denseSize / size;
 	}
 
 	@Override
 	public String toString() {
 		StringBuilder sb = new StringBuilder();
-		sb.append("Compression Statistics:\n");
-		sb.append("\t" + getGroupsTypesString() + "\n");
-		sb.append("\t" + getGroupsSizesString() + "\n");
+		sb.append("\nCompressionStatistics:");
+		sb.append("\nDense Size            : " + denseSize);
+		sb.append("\nOriginal Size         : " + originalSize);
+		sb.append("\nCompressed Size       : " + size);
+		sb.append("\nCompressionRatio      : " + getRatio());
+		if(colGroupCounts != null) {
+			sb.append("\nCompressionTypes      : " + getGroupsTypesString());
+			sb.append("\nCompressionGroupSizes : " + getGroupsSizesString());
+		}
 		return sb.toString();
 	}
 

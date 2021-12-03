@@ -41,11 +41,11 @@ public class TransformFrameEncodeDecodeTest extends AutomatedTestBase
 	private final static String TEST_CLASS_DIR = TEST_DIR + TransformFrameEncodeDecodeTest.class.getSimpleName() + "/";
 	
 	//dataset and transform tasks without missing values
-	private final static String DATASET1 	= "homes3/homes.csv";
-	private final static String SPEC1 		= "homes3/homes.tfspec_recode.json"; 
-	private final static String SPEC1b 		= "homes3/homes.tfspec_recode2.json"; 
-	private final static String SPEC2 		= "homes3/homes.tfspec_dummy.json";
-	private final static String SPEC2b 		= "homes3/homes.tfspec_dummy2.json";
+	private final static String DATASET1 = "homes3/homes.csv";
+	private final static String SPEC1    = "homes3/homes.tfspec_recode.json"; 
+	private final static String SPEC1b   = "homes3/homes.tfspec_recode2.json"; 
+	private final static String SPEC2    = "homes3/homes.tfspec_dummy.json";
+	private final static String SPEC2b   = "homes3/homes.tfspec_dummy2.json";
 	
 	public enum TransformType {
 		RECODE,
@@ -150,8 +150,8 @@ public class TransformFrameEncodeDecodeTest extends AutomatedTestBase
 			String HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = HOME + TEST_NAME1 + ".dml";
 			programArgs = new String[]{"-explain","-nvargs", 
-				"DATA=" + HOME + "input/" + DATASET,
-				"TFSPEC=" + HOME + "input/" + SPEC,
+				"DATA=" + DATASET_DIR + DATASET,
+				"TFSPEC=" + DATASET_DIR + SPEC,
 				"TFDATA=" + output("tfout"), "SEP=,",
 				"OFMT=" + ofmt, "OSEP=," };
 
@@ -167,7 +167,7 @@ public class TransformFrameEncodeDecodeTest extends AutomatedTestBase
 			//read input/output and compare
 			FrameReader reader1 = FrameReaderFactory.createFrameReader(FileFormat.CSV, 
 					new FileFormatPropertiesCSV(true, ",", false));
-			FrameBlock fb1 = reader1.readFrameFromHDFS(HOME + "input/" + DATASET, -1L, -1L);
+			FrameBlock fb1 = reader1.readFrameFromHDFS(DATASET_DIR + DATASET, -1L, -1L);
 			FrameReader reader2 = FrameReaderFactory.createFrameReader(FileFormat.CSV);
 			FrameBlock fb2 = reader2.readFrameFromHDFS(output("tfout"), -1L, -1L);
 			String[][] R1 = DataConverter.convertToStringFrame(fb1);
@@ -176,7 +176,8 @@ public class TransformFrameEncodeDecodeTest extends AutomatedTestBase
 			
 			if( rt == ExecMode.HYBRID ) {
 				Assert.assertEquals("Wrong number of executed Spark instructions: " + 
-					Statistics.getNoOfExecutedSPInst(), new Long(0), new Long(Statistics.getNoOfExecutedSPInst()));
+					Statistics.getNoOfExecutedSPInst(), Long.valueOf(0),
+					Long.valueOf(Statistics.getNoOfExecutedSPInst()));
 			}
 		}
 		catch(Exception ex) {

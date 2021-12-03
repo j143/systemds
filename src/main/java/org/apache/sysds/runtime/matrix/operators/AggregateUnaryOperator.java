@@ -26,12 +26,12 @@ import org.apache.sysds.runtime.functionobjects.KahanPlusSq;
 import org.apache.sysds.runtime.functionobjects.Minus;
 import org.apache.sysds.runtime.functionobjects.Or;
 import org.apache.sysds.runtime.functionobjects.Plus;
+import org.apache.sysds.runtime.functionobjects.ReduceAll;
 import org.apache.sysds.runtime.functionobjects.ReduceCol;
 import org.apache.sysds.runtime.functionobjects.ReduceRow;
 
 
-public class AggregateUnaryOperator  extends Operator 
-{
+public class AggregateUnaryOperator extends Operator {
 	private static final long serialVersionUID = 6690553323120787735L;
 
 	public final AggregateOperator aggOp;
@@ -67,5 +67,9 @@ public class AggregateUnaryOperator  extends Operator
 	
 	public boolean isColAggregate() {
 		return indexFn instanceof ReduceRow;
+	}
+
+	public boolean isFullAggregate() {
+		return indexFn instanceof ReduceAll;
 	}
 }

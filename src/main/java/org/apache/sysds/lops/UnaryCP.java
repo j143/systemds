@@ -20,7 +20,7 @@
 package org.apache.sysds.lops;
 
  
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.instructions.InstructionUtils;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.OpOp1;
@@ -42,8 +42,8 @@ public class UnaryCP extends Lop
 	 * 
 	 * @param input low-level operator 1
 	 * @param op operation type
-	 * @param dt data type
-	 * @param vt value type
+	 * @param dt data type of the output
+	 * @param vt value type of the output
 	 * @param et exec type
 	 */
 	public UnaryCP(Lop input, OpOp1 op, DataType dt, ValueType vt, ExecType et) {

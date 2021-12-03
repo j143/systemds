@@ -21,7 +21,7 @@ package org.apache.sysds.lops;
 
 import org.apache.sysds.hops.AggBinaryOp.SparkAggType;
  
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
@@ -70,6 +70,11 @@ public class MMCJ extends Lop
 		this(input1, input2, dt, vt, MMCJType.NO_AGG, et);
 		_outputEmptyBlocks = outputEmptyBlocks;
 		_aggtype = aggtype;
+	}
+
+	@Override
+	public SparkAggType getAggType() {
+		return _aggtype;
 	}
 	
 	@Override

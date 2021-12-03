@@ -25,8 +25,6 @@ import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
 import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -107,7 +105,7 @@ public class ReaderWriterFederated {
 			FileSystem fs = IOUtilFunctions.getFileSystem(path, job);
 			DataOutputStream out = fs.create(path, true);
 			ObjectMapper mapper = new ObjectMapper();
-			FederatedDataAddress[] outObjects = parseMap(fedMap.getFedMapping());
+			FederatedDataAddress[] outObjects = parseMap(fedMap.getMap());
 			try(BufferedWriter pw = new BufferedWriter(new OutputStreamWriter(out))) {
 				mapper.writeValue(pw, outObjects);
 			}
@@ -119,13 +117,10 @@ public class ReaderWriterFederated {
 		}
 	}
 
-	private static FederatedDataAddress[] parseMap(Map<FederatedRange, FederatedData> map) {
-		FederatedDataAddress[] res = new FederatedDataAddress[map.size()];
-		int i = 0;
-		for(Entry<FederatedRange, FederatedData> ent : map.entrySet()) {
-			res[i++] = new FederatedDataAddress(ent.getKey(), ent.getValue());
-		}
-		return res;
+	private static FederatedDataAddress[] parseMap(List<Pair<FederatedRange, FederatedData>> map) {
+		return map.stream()
+			.map(e -> new FederatedDataAddress(e.getKey(), e.getValue()))
+			.toArray(FederatedDataAddress[]::new);
 	}
 
 	/**

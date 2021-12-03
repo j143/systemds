@@ -25,9 +25,12 @@ import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.Function;
 import org.apache.spark.api.java.function.Function2;
 import org.apache.spark.api.java.function.PairFlatMapFunction;
+import org.apache.spark.api.java.function.VoidFunction;
 import org.apache.spark.storage.StorageLevel;
 import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.lops.Checkpoint;
+import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
+import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.controlprogram.context.SparkExecutionContext;
 import org.apache.sysds.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
 import org.apache.sysds.runtime.data.IndexedTensorBlock;
@@ -127,12 +130,16 @@ public class SparkUtils
 			return in.getNumPartitions();
 		return getNumPreferredPartitions(dc);
 	}
-	
+
 	public static int getNumPreferredPartitions(DataCharacteristics dc) {
+		return getNumPreferredPartitions(dc, !dc.isNoEmptyBlocks());
+	}
+	
+	public static int getNumPreferredPartitions(DataCharacteristics dc, boolean outputEmptyBlocks) {
 		if( !dc.dimsKnown() )
 			return SparkExecutionContext.getDefaultParallelism(true);
 		double hdfsBlockSize = InfrastructureAnalyzer.getHDFSBlockSize();
-		double matrixPSize = OptimizerUtils.estimatePartitionedSizeExactSparsity(dc);
+		double matrixPSize = OptimizerUtils.estimatePartitionedSizeExactSparsity(dc, outputEmptyBlocks);
 		return (int) Math.max(Math.ceil(matrixPSize/hdfsBlockSize), 1);
 	}
 	
@@ -191,6 +198,12 @@ public class SparkUtils
 			return in.mapValues(new CopyTensorBlockFunction(false));
 		else //requires key access, so use mappartitions
 			return in.mapPartitionsToPair(new CopyTensorBlockPairFunction(deep), true);
+	}
+	
+	public static void checkSparsity(String varname, ExecutionContext ec) {
+		SparkExecutionContext sec = (SparkExecutionContext) ec;
+		sec.getBinaryMatrixBlockRDDHandleForVariable(varname)
+			.foreach(new CheckSparsityFunction());
 	}
 
 	// This returns RDD with identifier as well as location
@@ -261,12 +274,36 @@ public class SparkUtils
 		return ret;
 	}
 	
+	@SuppressWarnings("unchecked")
+	public static long getNonZeros(MatrixObject mo) {
+		return getNonZeros((JavaPairRDD<MatrixIndexes, MatrixBlock>)mo.getRDDHandle().getRDD());
+	}
+	
 	public static long getNonZeros(JavaPairRDD<MatrixIndexes, MatrixBlock> input) {
 		//note: avoid direct lambda expression due reduce unnecessary GC overhead
 		return input.filter(new FilterNonEmptyBlocksFunction())
 			.values().mapPartitions(new RecomputeNnzFunction()).reduce((a,b)->a+b);
 	}
 
+	public static void postprocessUltraSparseOutput(MatrixObject mo, DataCharacteristics mcOut) {
+		long memUB = OptimizerUtils.estimateSizeExactSparsity(
+			mcOut.getRows(), mcOut.getCols(), mcOut.getNonZerosBound());
+		if( !OptimizerUtils.exceedsCachingThreshold(mcOut.getCols(), memUB) //< mem budget
+			&& memUB < OptimizerUtils.estimateSizeExactSparsity(mcOut))
+			mo.acquireReadAndRelease();
+	}
+	
+	private static class CheckSparsityFunction implements VoidFunction<Tuple2<MatrixIndexes,MatrixBlock>>
+	{
+		private static final long serialVersionUID = 4150132775681848807L;
+
+		@Override
+		public void call(Tuple2<MatrixIndexes, MatrixBlock> arg) throws Exception {
+			arg._2.checkNonZeros();
+			arg._2.checkSparseRows();
+		}
+	}
+	
 	private static class AnalyzeCellDataCharacteristics implements Function<Tuple2<MatrixIndexes,MatrixCell>, DataCharacteristics>
 	{
 		private static final long serialVersionUID = 8899395272683723008L;

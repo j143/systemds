@@ -53,36 +53,27 @@ tensors (multi-dimensional arrays) whose first dimension may have a heterogeneou
 
    guide/federated.rst
    guide/algorithms_basics.rst
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Onnx SystemDS
-
-   onnx_systemds/onnx_systemds.rst
-   onnx_systemds/onnx_systemds_design.rst
+   guide/python_end_to_end_tut.rst
 
 .. toctree::
    :maxdepth: 1
    :hidden:
    :caption: API
 
-   api/operator/algorithms.rst
    api/context/systemds_context.rst
-   api/matrix/matrix.rst
-   api/matrix/federated.rst
-   api/operator/operation_node.rst
-   api/onnx_systemds/convert.rst
-   api/onnx_systemds/onnx_helper.rst
-   api/onnx_systemds/operator_gen.rst
-   api/onnx_systemds/render.rst
-   api/onnx_systemds/util.rst
+   api/operator/algorithms.rst
+   api/operator/node/matrix.rst
+   api/operator/node/frame.rst
+   api/operator/node/list.rst
+   api/operator/node/scalar.rst
+   api/operator/node/source.rst
 
 .. toctree::
    :maxdepth: 1
    :hidden:
    :caption: Internals API
 
+   api/operator/operation_node.rst
    api/script_building/dag.rst
    api/script_building/script.rst
    api/utils/converters.rst

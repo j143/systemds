@@ -29,20 +29,39 @@ public abstract class UnaryFEDInstruction extends ComputationFEDInstruction {
 	protected UnaryFEDInstruction(FEDType type, Operator op, CPOperand in, CPOperand out, String opcode, String instr) {
 		this(type, op, in, null, null, out, opcode, instr);
 	}
+
+	protected UnaryFEDInstruction(FEDType type, Operator op, CPOperand in, CPOperand out, String opcode, String instr,
+		FederatedOutput fedOut) {
+		this(type, op, in, null, null, out, opcode, instr, fedOut);
+	}
 	
 	protected UnaryFEDInstruction(FEDType type, Operator op, CPOperand in1, CPOperand in2, CPOperand out, String opcode,
 			String instr) {
 		this(type, op, in1, in2, null, out, opcode, instr);
 	}
+
+	protected UnaryFEDInstruction(FEDType type, Operator op, CPOperand in1, CPOperand in2, CPOperand out, String opcode,
+		String instr, FederatedOutput fedOut) {
+		this(type, op, in1, in2, null, out, opcode, instr, fedOut);
+	}
 	
 	protected UnaryFEDInstruction(FEDType type, Operator op, CPOperand in1, CPOperand in2, CPOperand in3, CPOperand out,
 			String opcode, String instr) {
-		super(type, op, in1, in2, in3, out, opcode, instr);
+		this(type, op, in1, in2, in3, out, opcode, instr, FederatedOutput.NONE);
+	}
+
+	protected UnaryFEDInstruction(FEDType type, Operator op, CPOperand in1, CPOperand in2, CPOperand in3, CPOperand out,
+		String opcode, String instr, FederatedOutput fedOut) {
+		super(type, op, in1, in2, in3, out, opcode, instr, fedOut);
 	}
 	
 	static String parseUnaryInstruction(String instr, CPOperand in, CPOperand out) {
-		InstructionUtils.checkNumFields(instr, 2);
-		return parse(instr, in, null, null, out);
+		//TODO: simplify once all fed instructions have consistent flags
+		int num = InstructionUtils.checkNumFields(instr, 2, 3);
+		if(num == 2)
+			return parse(instr, in, null, null, out);
+		else 
+			return parseWithFedOutFlag(instr, in, out);
 	}
 	
 	static String parseUnaryInstruction(String instr, CPOperand in1, CPOperand in2, CPOperand out) {
@@ -82,5 +101,27 @@ public abstract class UnaryFEDInstruction extends ComputationFEDInstruction {
 				throw new DMLRuntimeException("Unexpected number of operands in the instruction: " + instr);
 		}
 		return opcode;
+	}
+	
+	private static String parseWithFedOutFlag(String instr, CPOperand in1, CPOperand out) {
+		String[] parts = InstructionUtils.getInstructionPartsWithValueType(instr);
+		String opcode = parts[0];
+		in1.split(parts[1]);
+		out.split(parts[parts.length - 2]);
+		return opcode;
+	}
+
+	/**
+	 * Parse and return federated output flag from given instr string at given position.
+	 * If the position given is greater than the length of the instruction, FederatedOutput.NONE is returned.
+	 * @param instr instruction string to be parsed
+	 * @param position of federated output flag
+	 * @return parsed federated output flag or FederatedOutput.NONE
+	 */
+	static FederatedOutput parseFedOutFlag(String instr, int position){
+		String[] parts = InstructionUtils.getInstructionPartsWithValueType(instr);
+		if ( parts.length > position )
+			return FederatedOutput.valueOf(parts[position]);
+		else return FederatedOutput.NONE;
 	}
 }

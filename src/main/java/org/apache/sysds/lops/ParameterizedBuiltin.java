@@ -23,7 +23,7 @@ import java.util.HashMap;
 import java.util.Map.Entry;
 
  
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ParamBuiltinOp;
@@ -171,14 +171,21 @@ public class ParameterizedBuiltin extends Lop
 					
 					sb.append(OPERAND_DELIMITOR);
 				}
-				
+
 				break;
-			
+
+			case TOKENIZE:
 			case TRANSFORMAPPLY:
 			case TRANSFORMDECODE:
 			case TRANSFORMCOLMAP:
 			case TRANSFORMMETA:{ 
 				sb.append(_operation.name().toLowerCase()); //opcode
+				sb.append(OPERAND_DELIMITOR);
+				sb.append(compileGenericParamMap(_inputParams));
+				break;
+			}
+			case AUTODIFF: {
+				sb.append("autoDiff"); //opcode
 				sb.append(OPERAND_DELIMITOR);
 				sb.append(compileGenericParamMap(_inputParams));
 				break;

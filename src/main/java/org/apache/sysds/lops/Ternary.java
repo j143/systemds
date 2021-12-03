@@ -20,12 +20,12 @@
 package org.apache.sysds.lops;
 
  
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.OpOp3;
 import org.apache.sysds.common.Types.ValueType;
-
+import org.apache.sysds.runtime.instructions.InstructionUtils;
 
 /**
  * Lop to perform Sum of a matrix with another matrix multiplied by Scalar.
@@ -33,10 +33,12 @@ import org.apache.sysds.common.Types.ValueType;
 public class Ternary extends Lop 
 {
 	private final OpOp3 _op;
-		
-	public Ternary(OpOp3 op, Lop input1, Lop input2, Lop input3, DataType dt, ValueType vt, ExecType et) {
+	private final int _numThreads;
+	
+	public Ternary(OpOp3 op, Lop input1, Lop input2, Lop input3, DataType dt, ValueType vt, ExecType et, int numThreads) {
 		super(Lop.Type.Ternary, dt, vt);
 		_op = op;
+		_numThreads = numThreads;
 		init(input1, input2, input3, et);
 	}
 
@@ -57,20 +59,20 @@ public class Ternary extends Lop
 	
 	@Override
 	public String getInstructions(String input1, String input2, String input3, String output)  {
-		StringBuilder sb = new StringBuilder();
-		sb.append( getExecType() );
-		sb.append( OPERAND_DELIMITOR );
-		sb.append( _op.toString() );
+		String ret = InstructionUtils.concatOperands(
+			getExecType().name(), _op.toString(),
+			getInputs().get(0).prepInputOperand(input1),
+			getInputs().get(1).prepInputOperand(input2),
+			getInputs().get(2).prepInputOperand(input3),
+			prepOutputOperand(output));
 		
-		//process three operands and output
-		String[] inputs = new String[]{input1, input2, input3};
-		for( int i=0; i<3; i++ ) {
-			sb.append( OPERAND_DELIMITOR );
-			sb.append( getInputs().get(i).prepInputOperand(inputs[i]) );
+		if( getDataType().isMatrix() ) {
+			if( getExecType() == ExecType.CP )
+				ret = InstructionUtils.concatOperands(ret, String.valueOf(_numThreads));
+			else if( getExecType() == ExecType.FED )
+				ret = InstructionUtils.concatOperands(ret, String.valueOf(_numThreads), _fedOutput.name());
 		}
-		sb.append( OPERAND_DELIMITOR );
-		sb.append( prepOutputOperand(output) );
 		
-		return sb.toString();
+		return ret;
 	}
 }

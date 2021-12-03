@@ -23,7 +23,7 @@ import org.junit.Assert;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
 import org.apache.sysds.test.TestConfiguration;
@@ -164,7 +164,7 @@ public class WriteReadZeroDimsTest extends AutomatedTestBase
 				
 				//check overall result
 				double expected = ((type == Type.Zero_Rows) ? colsM : rowsM) * 7;
-				Assert.assertEquals(new Double(expected),
+				Assert.assertEquals(Double.valueOf(expected),
 					readDMLMatrixFromOutputDir("R2").get(new CellIndex(1,1)));
 			}
 		}

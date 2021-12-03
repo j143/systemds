@@ -21,7 +21,7 @@ package org.apache.sysds.lops;
 
 import org.apache.sysds.hops.AggBinaryOp.SparkAggType;
  
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
@@ -85,6 +85,11 @@ public class RightIndex extends Lop
 			return OPCODE+"ForLeft";
 		else
 			return OPCODE;
+	}
+
+	@Override
+	public SparkAggType getAggType() {
+		return _aggtype;
 	}
 	
 	@Override

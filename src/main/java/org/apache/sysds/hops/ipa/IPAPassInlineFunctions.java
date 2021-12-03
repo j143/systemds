@@ -21,6 +21,7 @@ package org.apache.sysds.hops.ipa;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 
@@ -58,11 +59,14 @@ public class IPAPassInlineFunctions extends IPAPass
 		//NOTE: we inline single-statement-block (i.e., last-level block) functions
 		//that do not contain other functions, and either are small or called once
 		
+		boolean ret = false; //rebuild fgraph
 		for( String fkey : fgraph.getReachableFunctions() ) {
 			FunctionStatementBlock fsb = prog.getFunctionStatementBlock(fkey);
 			FunctionStatement fstmt = (FunctionStatement)fsb.getStatement(0);
-			if( fstmt.getBody().size() == 1 
-				&& HopRewriteUtils.isLastLevelStatementBlock(fstmt.getBody().get(0)) 
+			if( fgraph.getFunctionCalls(fkey)==null )
+				ret = true; //inlining might have remove paramserv-fcalls
+			else if( fstmt.getBody().size() == 1 
+				&& HopRewriteUtils.isLastLevelStatementBlock(fstmt.getBody().get(0))
 				&& !containsFunctionOp(fstmt.getBody().get(0).getHops())
 				&& (fgraph.getFunctionCalls(fkey).size() == 1
 					|| countOperators(fstmt.getBody().get(0).getHops()) 
@@ -81,9 +85,14 @@ public class IPAPassInlineFunctions extends IPAPass
 					if( LOG.isDebugEnabled() )
 						LOG.debug("-- inline '"+fkey+"' at line "+op.getBeginLine());
 					
-					//step 0: robustness for special cases
+					//step 0: robustness for special cases (named args, paramserv)
+					// (no need to check for equal output length as the IPA and runtime is 
+					// robust enough to handle the case of partially bound outputs and 
+					// inlining should not depend on it, however, binding more outputs 
+					// than the function returns is impossible and not inlined)
 					if( op.getInput().size() != fstmt.getInputParams().size()
-						|| op.getOutputVariableNames().length != fstmt.getOutputParams().size() ) {
+						|| op.getOutputVariableNames().length > fstmt.getOutputParams().size()
+						|| op.isPseudoFunctionCall() ) {
 						removedAll = false;
 						continue;
 					}
@@ -108,12 +117,13 @@ public class IPAPassInlineFunctions extends IPAPass
 					String[] opOutputs = op.getOutputVariableNames();
 					for(int j=0; j<opOutputs.length; j++)
 						outMap.put(fstmt.getOutputParams().get(j).getName(), opOutputs[j]);
-					for(int j=0; j<hops2.size(); j++) {
-						Hop out = hops2.get(j);
+					Iterator<Hop> iterFout = hops2.iterator();
+					while( iterFout.hasNext() ) {
+						Hop out = iterFout.next();
 						if( HopRewriteUtils.isData(out, OpOpData.TRANSIENTWRITE) ) {
 							out.setName(outMap.get(out.getName()));
 							if( out.getName() == null )
-								hops2.remove(j);
+								iterFout.remove(); //not all outputs bound
 						}
 					}
 					fcallsSB.get(i).getHops().remove(op);
@@ -130,10 +140,12 @@ public class IPAPassInlineFunctions extends IPAPass
 					for( String fkeyTrans : fkeysTrans )
 						if( !fgraph.isReachableFunction(fkeyTrans, true) )
 							fgraph.removeFunctionCalls(fkeyTrans);
+					ret = true; //rebuild fgraph in next iteration
 				}
 			}
 		}
-		return false;
+		
+		return ret;
 	}
 	
 	private static boolean containsFunctionOp(ArrayList<Hop> hops) {

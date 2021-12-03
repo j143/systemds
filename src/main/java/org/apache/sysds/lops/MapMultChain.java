@@ -20,7 +20,7 @@
 package org.apache.sysds.lops;
 
  
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
@@ -97,6 +97,13 @@ public class MapMultChain extends Lop
 	@Override
 	public String toString() {
 		return "Operation = MapMMChain";
+	}
+
+	@Override
+	public Lop getBroadcastInput() {
+		if (getExecType() != ExecType.SPARK)
+			return null;
+		return getInputs().get(1);
 	}
 
 	@Override

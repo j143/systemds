@@ -26,6 +26,7 @@ import java.util.Arrays;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.runtime.DMLRuntimeException;
+import org.apache.sysds.runtime.compress.CompressedMatrixBlock;
 import org.apache.sysds.runtime.data.DenseBlock;
 import org.apache.sysds.runtime.data.SparseBlock;
 import org.apache.sysds.runtime.instructions.cp.ScalarObject;
@@ -37,7 +38,7 @@ import org.apache.sysds.runtime.util.UtilFunctions;
 public abstract class SpoofOperator implements Serializable
 {
 	private static final long serialVersionUID = 3834006998853573319L;
-	private static final Log LOG = LogFactory.getLog(SpoofOperator.class.getName());
+	protected static final Log LOG = LogFactory.getLog(SpoofOperator.class.getName());
 	
 	protected static final long PAR_NUMCELL_THRESHOLD = 1024*1024;   //Min 1M elements
 	protected static final long PAR_MINFLOP_THRESHOLD = 2L*1024*1024; //MIN 2 MFLOP
@@ -83,9 +84,11 @@ public abstract class SpoofOperator implements Serializable
 		for(int i=offset; i<offset+len; i++) {
 			//transpose if necessary
 			int clen = inputs.get(i).getNumColumns();
-			MatrixBlock in = (tB1 && i==1 ) ? LibMatrixReorg.transpose(inputs.get(i), 
-				new MatrixBlock(clen, inputs.get(i).getNumRows(), false)) : inputs.get(i);
-			
+			MatrixBlock inn = inputs.get(i);
+			if(inn instanceof CompressedMatrixBlock)
+				inn = CompressedMatrixBlock.getUncompressed(inn);
+			MatrixBlock in = (tB1 && i==1 ) ? LibMatrixReorg.transpose(inn, 
+				new MatrixBlock(clen, inn.getNumRows(), false)) : inn;
 			//create side input
 			if( denseOnly && (in.isInSparseFormat() || !in.isAllocated()) ) {
 				//convert empty or sparse to dense temporary block (note: we don't do
@@ -143,13 +146,6 @@ public abstract class SpoofOperator implements Serializable
 		double[] scalars = new double[scalarObjects.size()];
 		for(int i=0; i < scalarObjects.size(); i++)
 			scalars[i] = scalarObjects.get(i).getDoubleValue();
-		return scalars;
-	}
-
-	protected static float[] prepInputScalarsFloat(ArrayList<ScalarObject> scalarObjects) {
-		float[] scalars = new float[scalarObjects.size()];
-		for(int i=0; i < scalarObjects.size(); i++)
-			scalars[i] = (float)scalarObjects.get(i).getDoubleValue();
 		return scalars;
 	}
 
@@ -230,6 +226,10 @@ public abstract class SpoofOperator implements Serializable
 		System.arraycopy(data.values(rowIndex), data.pos(rowIndex), c, 0, colIndex+1);
 		return c;
 	}
+	
+
+	
+	public abstract SpoofCUDAOperator createCUDAInstrcution(Integer opID, SpoofCUDAOperator.PrecisionProxy ep);
 	
 	public static class SideInput {
 		public final DenseBlock ddat;

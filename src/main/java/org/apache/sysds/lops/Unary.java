@@ -20,7 +20,7 @@
 package org.apache.sysds.lops;
 
  
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.OpOp1;
@@ -53,10 +53,12 @@ public class Unary extends Lop
 	 * @param dt data type
 	 * @param vt value type
 	 * @param et execution type
+	 * @param numThreads number of threads for execution
 	 */
-	public Unary(Lop input1, Lop input2, OpOp1 op, DataType dt, ValueType vt, ExecType et) {
+	public Unary(Lop input1, Lop input2, OpOp1 op, DataType dt, ValueType vt, ExecType et, int numThreads) {
 		super(Lop.Type.UNARY, dt, vt);
 		init(input1, input2, op, dt, vt, et);
+		_numThreads = numThreads;
 	}
 
 	private void init(Lop input1, Lop input2, OpOp1 op, DataType dt, ValueType vt, ExecType et) {
@@ -120,6 +122,7 @@ public class Unary extends Lop
 	}
 	
 	public static boolean isMultiThreadedOp(OpOp1 op) {
+		//TODO extend for all basic unary operations
 		return op==OpOp1.CUMSUM
 			|| op==OpOp1.CUMPROD
 			|| op==OpOp1.CUMMIN
@@ -127,7 +130,13 @@ public class Unary extends Lop
 			|| op==OpOp1.CUMSUMPROD
 			|| op==OpOp1.EXP
 			|| op==OpOp1.LOG
-			|| op==OpOp1.SIGMOID;
+			|| op==OpOp1.ABS
+			|| op==OpOp1.ROUND
+			|| op==OpOp1.FLOOR
+			|| op==OpOp1.CEIL
+			|| op==OpOp1.SIGMOID
+			|| op==OpOp1.POW2
+			|| op==OpOp1.MULT2;
 	}
 	
 	@Override
@@ -180,7 +189,12 @@ public class Unary extends Lop
 			sb.append( getInputs().get(1).prepInputOperand(input2));
 		
 		sb.append( OPERAND_DELIMITOR );
-		sb.append( this.prepOutputOperand(output));
+		sb.append( prepOutputOperand(output));
+		
+		if( getExecType() == ExecType.CP ) {
+			sb.append( OPERAND_DELIMITOR );
+			sb.append( String.valueOf(_numThreads) );
+		}
 		
 		return sb.toString();
 	}

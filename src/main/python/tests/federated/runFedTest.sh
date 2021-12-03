@@ -29,10 +29,12 @@
 # FIELDS
 workerdir="tests/federated/worker/"
 outputdir="tests/federated/output/"
-mkdir $workerdir
-mkdir $outputdir
+tmpfiledir="tests/federated/tmp/"
+mkdir -p $workerdir
+mkdir -p $outputdir
 w1_Output="$workerdir/w1"
 w2_Output="$workerdir/w2"
+w3_Output="$workerdir/w3"
 log="$outputdir/out.log"
 
 # Make the workers start quietly and pipe their output to a file to print later
@@ -41,12 +43,15 @@ systemds WORKER 8001 >$w1_Output 2>&1 &
 Fed1=$!
 systemds WORKER 8002 >$w2_Output 2>&1 &
 Fed2=$!
-echo "Starting workers" && sleep 3 && echo "Starting tests"
+systemds WORKER 8003 >$w3_Output 2>&1 &
+Fed3=$!
+echo "Starting workers" && sleep 6 && echo "Starting tests"
 
 # Run test
 python -m unittest discover -s tests/federated -p 'test_*.py' $1 >$log 2>&1
 pkill -P $Fed1
 pkill -P $Fed2
+pkill -P $Fed3
 
 # Print output
 echo -e "\n---------------\nWorkers Output:\n---------------"
@@ -54,12 +59,18 @@ echo -e "\nWorker 1:"
 cat $w1_Output
 echo -e "\nWorker 2:"
 cat $w2_Output
-rm -r $workerdir
+echo -e "\nWorker 3:"
+cat $w3_Output
 echo -e "\n------------\nTest output:\n------------"
 cat $log
 grepvals="$(tail -n 10 $log | grep OK)"
-rm -r $outputdir
 echo -e "------------\n"
+
+# Cleanup
+rm -r $workerdir
+rm -r $outputdir
+rm -r $tmpfiledir
+
 if [[ $grepvals == *"OK"* ]]; then
 	exit 0
 else

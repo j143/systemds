@@ -27,6 +27,7 @@ import java.util.TreeSet;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.runtime.DMLRuntimeException;
+import org.apache.sysds.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
 import org.apache.sysds.runtime.lineage.LineageCacheConfig.LineageCacheStatus;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.util.LocalFileUtils;
@@ -46,8 +47,7 @@ public class LineageCacheEviction
 		_cachesize = 0;
 		weightedQueue.clear();
 		_outdir = null;
-		if (DMLScript.STATISTICS)
-			_removelist.clear();
+		_removelist.clear();
 	}
 
 	//--------------- CACHE MAINTENANCE & LOOKUP FUNCTIONS --------------//
@@ -70,7 +70,8 @@ public class LineageCacheEviction
 			// Don't add the memory pinned entries in weighted queue. 
 			// The eviction queue should contain only entries that can
 			// be removed or spilled to disk.
-			//entry.setTimestamp();
+
+			// Set timestamp, score, and scale score by #misses
 			entry.computeScore(_removelist); 
 			// Adjust score according to cache miss counts.
 			weightedQueue.add(entry);
@@ -81,15 +82,15 @@ public class LineageCacheEviction
 		// Reset the timestamp to maintain the LRU component of the scoring function
 		if (LineageCacheConfig.isTimeBased()) { 
 			if (weightedQueue.remove(entry)) {
-				entry.setTimestamp();
+				entry.updateTimestamp();
 				weightedQueue.add(entry);
 			}
 		}
-		// Increase computation time of the sought entry.
+		// Scale score of the sought entry after every cache hit
 		// FIXME: avoid when called from partial reuse methods
 		if (LineageCacheConfig.isCostNsize()) {
 			if (weightedQueue.remove(entry)) {
-				entry.updateComputeTime();
+				entry.updateScore();
 				weightedQueue.add(entry);
 			}
 		}
@@ -99,7 +100,7 @@ public class LineageCacheEviction
 		if (cache.remove(e._key) != null)
 			_cachesize -= e.getSize();
 
-		// Increase priority if same entry is removed multiple times
+		// Maintain miss count to increase the score if the item enters the cache again
 		if (_removelist.containsKey(e._key))
 			_removelist.replace(e._key, _removelist.get(e._key)+1);
 		else
@@ -172,7 +173,9 @@ public class LineageCacheEviction
 
 	//---------------- CACHE SPACE MANAGEMENT METHODS -----------------//
 	
-	protected static void setCacheLimit(long limit) {
+	protected static void setCacheLimit(double fraction) {
+		long maxMem = InfrastructureAnalyzer.getLocalMaxMemory();
+		long limit = (long)(fraction * maxMem);
 		CACHE_LIMIT = limit;
 	}
 
@@ -224,7 +227,6 @@ public class LineageCacheEviction
 			// Estimate time to write to FS + read from FS.
 			double spilltime = getDiskSpillEstimate(e) * 1000; // in milliseconds
 			double exectime = ((double) e._computeTime) / 1000000; // in milliseconds
-			//FIXME: this comuteTime is not adjusted according to hit/miss counts
 
 			if (LineageCache.DEBUG) {
 				System.out.print("LI = " + e._key.getOpcode());
@@ -236,7 +238,7 @@ public class LineageCacheEviction
 			}
 
 			if (spilltime < LineageCacheConfig.MIN_SPILL_TIME_ESTIMATE) {
-				// Can't trust the estimate if less than 100ms.
+				// Can't trust the estimate if less than 10ms.
 				// Spill if it takes longer to recompute.
 				removeOrSpillEntry(cache, e, //spill or delete
 					exectime >= LineageCacheConfig.MIN_SPILL_TIME_ESTIMATE);
@@ -288,7 +290,7 @@ public class LineageCacheEviction
 			return; 
 		
 		double newIOSpeed = size / IOtime; // MB per second 
-		// Adjust the read/write speed taking into account the last read/write.
+		// Adjust the read/write speed using exponential smoothing (alpha = 0.5)
 		// These constants will eventually converge to the real speed.
 		if (read) {
 			if (isSparse(e))
@@ -302,6 +304,7 @@ public class LineageCacheEviction
 			else
 				LineageCacheConfig.FSWRITE_DENSE= (LineageCacheConfig.FSWRITE_DENSE+ newIOSpeed) / 2;
 		}
+		// TODO: exponential smoothing with arbitrary smoothing factor
 	}
 	
 	private static boolean isSparse(LineageCacheEntry e) {

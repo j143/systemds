@@ -20,19 +20,19 @@
 package org.apache.sysds.runtime.compress.utils;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.Comparator;
 
 /**
  * This class provides a memory-efficient replacement for {@code HashMap<Double,IntArrayList>} for restricted use cases.
  * 
- * TODO: Fix allocation of size such that it contains some amount of overhead from the start, to enable hashmap
- * performance.
  */
-public class DoubleIntListHashMap extends CustomHashMap {
-
+public class DoubleIntListHashMap {
+	protected static final int INIT_CAPACITY = 8;
+	protected static final int RESIZE_FACTOR = 2;
+	protected static final float LOAD_FACTOR = 0.50f;
+	protected int _size = -1;
 	private DIListEntry[] _data = null;
+	public static int hashMissCount = 0;
 
 	public DoubleIntListHashMap() {
 		_data = new DIListEntry[INIT_CAPACITY];
@@ -44,6 +44,10 @@ public class DoubleIntListHashMap extends CustomHashMap {
 		_size = 0;
 	}
 
+	public int size() {
+		return _size;
+	}
+
 	public IntArrayList get(double key) {
 		// probe for early abort
 		if(_size == 0)
@@ -51,19 +55,25 @@ public class DoubleIntListHashMap extends CustomHashMap {
 
 		// compute entry index position
 		int hash = hash(key);
+		return getHash(key, hash);
+	}
+
+	private IntArrayList getHash(double key, int hash) {
 		int ix = indexFor(hash, _data.length);
+		return getHashIndex(key, ix);
+	}
+
+	private IntArrayList getHashIndex(double key, int ix) {
 
 		// find entry
-		for(DIListEntry e = _data[ix]; e != null; e = e.next) {
-			if(e.key == key) {
+		for(DIListEntry e = _data[ix]; e != null; e = e.next)
+			if(e.key == key)
 				return e.value;
-			}
-		}
 
 		return null;
 	}
 
-	public void appendValue(double key, IntArrayList value) {
+	private void appendValue(double key, IntArrayList value) {
 		// compute entry index position
 		int hash = hash(key);
 		int ix = indexFor(hash, _data.length);
@@ -83,6 +93,46 @@ public class DoubleIntListHashMap extends CustomHashMap {
 			resize();
 	}
 
+	/**
+	 * Append value into the hashmap, but ignore all zero keys.
+	 * 
+	 * @param key   The key to add the value to
+	 * @param value The value to add
+	 */
+	public void appendValue(double key, int value) {
+		if(key == 0)
+			return;
+
+		int hash = hash(key);
+		int ix = indexFor(hash, _data.length);
+		IntArrayList lstPtr = null; // The list to add the value to.
+		if(_data[ix] == null) {
+			lstPtr = new IntArrayList();
+			_data[ix] = new DIListEntry(key, lstPtr);
+			_size++;
+		}
+		else {
+			for(DIListEntry e = _data[ix]; e != null; e = e.next) {
+				if(e.key == key) {
+					lstPtr = e.value;
+					break;
+				}
+				else if(e.next == null) {
+					lstPtr = new IntArrayList();
+					// Swap to place the new value, in front.
+					DIListEntry eOld = _data[ix];
+					_data[ix] = new DIListEntry(key, lstPtr);
+					_data[ix].next = eOld;
+					_size++;
+					break;
+				}
+			}
+		}
+		lstPtr.appendValue(value);
+		if(_size >= LOAD_FACTOR * _data.length)
+			resize();
+	}
+
 	public ArrayList<DIListEntry> extractValues() {
 		ArrayList<DIListEntry> ret = new ArrayList<>();
 		for(DIListEntry e : _data) {
@@ -94,7 +144,7 @@ public class DoubleIntListHashMap extends CustomHashMap {
 				ret.add(e);
 			}
 		}
-		Collections.sort(ret);
+		// Collections.sort(ret);
 
 		return ret;
 	}
@@ -122,6 +172,8 @@ public class DoubleIntListHashMap extends CustomHashMap {
 	}
 
 	private static int hash(double key) {
+		// return (int) key;
+
 		// basic double hash code (w/o object creation)
 		long bits = Double.doubleToRawLongBits(key);
 		int h = (int) (bits ^ (bits >>> 32));
@@ -137,7 +189,7 @@ public class DoubleIntListHashMap extends CustomHashMap {
 		return h & (length - 1);
 	}
 
-	public class DIListEntry implements Comparator<DIListEntry>, Comparable<DIListEntry> {
+	public static class DIListEntry implements Comparator<DIListEntry>, Comparable<DIListEntry> {
 		public double key = Double.MAX_VALUE;
 		public IntArrayList value = null;
 		public DIListEntry next = null;
@@ -159,20 +211,22 @@ public class DoubleIntListHashMap extends CustomHashMap {
 		}
 
 		@Override
-		public String toString(){
+		public String toString() {
 			StringBuilder sb = new StringBuilder();
 			sb.append("[" + key + ", ");
-			sb.append( value + ", ");
-			sb.append( next + "]");
+			sb.append(value + ", ");
+			sb.append(next + "]");
 			return sb.toString();
 		}
 	}
 
 	@Override
-	public String toString(){
+	public String toString() {
 		StringBuilder sb = new StringBuilder();
 		sb.append(this.getClass().getSimpleName() + this.hashCode());
-		sb.append("\n" + Arrays.toString(_data));
+		for(int i = 0; i < _data.length; i++)
+			if(_data[i] != null)
+				sb.append(", " + _data[i]);
 		return sb.toString();
 	}
 }

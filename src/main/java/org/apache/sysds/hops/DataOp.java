@@ -34,7 +34,7 @@ import org.apache.sysds.hops.rewrite.HopRewriteUtils;
 import org.apache.sysds.lops.Data;
 import org.apache.sysds.lops.Federated;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.LopsException;
 import org.apache.sysds.lops.Sql;
 import org.apache.sysds.parser.DataExpression;
@@ -55,9 +55,10 @@ public class DataOp extends Hop {
 	//read dataop properties
 	private FileFormat _inFormat = FileFormat.TEXT;
 	private long _inBlocksize = -1;
+	private boolean _hasOnlyRDD = false;
 	
 	private boolean _recompileRead = true;
-	
+
 	/**
 	 * List of "named" input parameters. They are maintained as a hashmap:
 	 * parameter names (String) are mapped as indices (Integer) into getInput()
@@ -98,7 +99,7 @@ public class DataOp extends Hop {
 		setNnz(nnz);
 		
 		if( dop == OpOpData.TRANSIENTREAD )
-			setInputFormatType(FileFormat.BINARY);
+			setFileFormat(FileFormat.BINARY);
 	}
 
 	public DataOp(String l, DataType dt, ValueType vt, OpOpData dop,
@@ -136,7 +137,7 @@ public class DataOp extends Hop {
 			index++;
 		}
 		if (dop == OpOpData.TRANSIENTREAD ){
-			setInputFormatType(FileFormat.BINARY);
+			setFileFormat(FileFormat.BINARY);
 		}
 		
 		if( params.containsKey(DataExpression.READROWPARAM) )
@@ -158,7 +159,7 @@ public class DataOp extends Hop {
 		_fileName = fname;
 
 		if (dop == OpOpData.TRANSIENTWRITE || dop == OpOpData.FUNCTIONOUTPUT )
-			setInputFormatType(FileFormat.BINARY);
+			setFileFormat(FileFormat.BINARY);
 	}
 	
 	/**
@@ -196,7 +197,7 @@ public class DataOp extends Hop {
 		}
 
 		if (dop == OpOpData.TRANSIENTWRITE)
-			setInputFormatType(FileFormat.BINARY);
+			setFileFormat(FileFormat.BINARY);
 	}
 
 	/** Check for N (READ) or N+1 (WRITE) inputs. */
@@ -254,6 +255,14 @@ public class DataOp extends Hop {
 		return _paramIndexMap.get(name);
 	}
 	
+	public void setOnlyRDD(boolean flag) {
+		_hasOnlyRDD = flag;
+	}
+	
+	public boolean hasOnlyRDD() {
+		return _hasOnlyRDD;
+	}
+	
 	@Override
 	public boolean isGPUEnabled() {
 		return false;
@@ -280,27 +289,27 @@ public class DataOp extends Hop {
 		{
 			case TRANSIENTREAD:
 				l = new Data(_op, null, inputLops, getName(), null, 
-						getDataType(), getValueType(), getInputFormatType());
+						getDataType(), getValueType(), getFileFormat());
 				setOutputDimensions(l);
 				break;
 				
 			case PERSISTENTREAD:
 				l = new Data(_op, null, inputLops, getName(), null, 
-						getDataType(), getValueType(), getInputFormatType());
+						getDataType(), getValueType(), getFileFormat());
 				l.getOutputParameters().setDimensions(getDim1(), getDim2(), _inBlocksize, getNnz(), getUpdateType());
 				break;
 				
 			case PERSISTENTWRITE:
 			case FUNCTIONOUTPUT:
 				l = new Data(_op, getInput().get(0).constructLops(), inputLops, getName(), null, 
-					getDataType(), getValueType(), getInputFormatType());
+					getDataType(), getValueType(), getFileFormat());
 				((Data)l).setExecType(et);
 				setOutputDimensions(l);
 				break;
 				
 			case TRANSIENTWRITE:
 				l = new Data(_op, getInput().get(0).constructLops(), inputLops, getName(), null,
-						getDataType(), getValueType(), getInputFormatType());
+						getDataType(), getValueType(), getFileFormat());
 				setOutputDimensions(l);
 				break;
 				
@@ -322,16 +331,16 @@ public class DataOp extends Hop {
 		
 		//add reblock/checkpoint lops if necessary
 		constructAndSetLopsDataFlowProperties();
-	
+
 		return getLops();
 
 	}
 
-	public void setInputFormatType(FileFormat ft) {
+	public void setFileFormat(FileFormat ft) {
 		_inFormat = ft;
 	}
 
-	public FileFormat getInputFormatType() {
+	public FileFormat getFileFormat() {
 		return _inFormat;
 	}
 	
@@ -353,6 +362,11 @@ public class DataOp extends Hop {
 	
 	public boolean isPersistentReadWrite() {
 		return( _op == OpOpData.PERSISTENTREAD || _op == OpOpData.PERSISTENTWRITE );
+	}
+
+	@Override
+	public boolean isFederatedDataOp(){
+		return _op == OpOpData.FEDERATED;
 	}
 
 	@Override
@@ -403,7 +417,6 @@ public class DataOp extends Hop {
 			}
 			// output memory estimate is not required for "write" nodes (just input)
 		}
-		
 		return ret;
 	}
 	
@@ -430,7 +443,7 @@ public class DataOp extends Hop {
 	}
 	
 	@Override
-	protected ExecType optFindExecType() 
+	protected ExecType optFindExecType(boolean transitive) 
 	{
 		//MB: find exec type has two meanings here: (1) for write it means the actual
 		//exec type, while (2) for read it affects the recompilation decision as needed
@@ -484,10 +497,12 @@ public class DataOp extends Hop {
 			
 			_etype = letype;
 		}
-		
+
+		updateETFed();
+
 		return _etype;
 	}
-	
+
 	@Override
 	public void refreshSizeInformation() {
 		if( _op == OpOpData.PERSISTENTWRITE || _op == OpOpData.TRANSIENTWRITE ) {

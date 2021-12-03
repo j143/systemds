@@ -23,7 +23,7 @@ import java.util.HashMap;
 import org.junit.Test;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.ExecMode;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.runtime.util.DnnUtils;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -148,7 +148,7 @@ public class Conv2DBackwardDataTest extends AutomatedTestBase
 				DMLScript.USE_LOCAL_SPARK_CONFIG = true;
 			
 			loadTestConfiguration(config);
-	        
+			
 			/* This is for running the junit test the new way, i.e., construct the arguments directly */
 			String RI_HOME = SCRIPT_DIR + TEST_DIR;
 			fullDMLScriptName = RI_HOME + TEST_NAME + ".dml";
@@ -162,7 +162,7 @@ public class Conv2DBackwardDataTest extends AutomatedTestBase
 					"" + filterSize, "" + stride, "" + pad,
 					"" + P, "" + P, 
 					output("B"), sparseVal1, sparseVal2};
-			        
+			
 			boolean exceptionExpected = false;
 			int expectedNumberOfJobs = -1;
 			runTest(true, exceptionExpected, null, expectedNumberOfJobs);

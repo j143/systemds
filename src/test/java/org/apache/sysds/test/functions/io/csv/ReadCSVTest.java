@@ -33,25 +33,25 @@ public abstract class ReadCSVTest extends CSVTestBase {
 		return "transfusion_" + getId();
 	}
 
-	 @Test
-	 public void testCSV_Sequential_CP1() {
-	 	runCSVTest(getId(), ExecMode.SINGLE_NODE, false);
-	 }
+	@Test
+	public void testCSV_Sequential_CP1() {
+		runCSVTest(getId(), ExecMode.SINGLE_NODE, false);
+	}
 
-	 @Test
-	 public void testCSV_Parallel_CP1() {
-	 	runCSVTest(getId(), ExecMode.SINGLE_NODE, true);
-	 }
+	@Test
+	public void testCSV_Parallel_CP1() {
+		runCSVTest(getId(), ExecMode.SINGLE_NODE, true);
+	}
 
-	 @Test
-	 public void testCSV_Sequential_CP() {
-	 	runCSVTest(getId(), ExecMode.HYBRID, false);
-	 }
+	@Test
+	public void testCSV_Sequential_CP() {
+		runCSVTest(getId(), ExecMode.HYBRID, false);
+	}
 
-	 @Test
-	 public void testCSV_Parallel_CP() {
-	 	runCSVTest(getId(), ExecMode.HYBRID, true);
-	 }
+	@Test
+	public void testCSV_Parallel_CP() {
+		runCSVTest(getId(), ExecMode.HYBRID, true);
+	}
 
 	@Test
 	public void testCSV_SP() {
@@ -73,8 +73,8 @@ public abstract class ReadCSVTest extends CSVTestBase {
 			CompilerConfig.FLAG_PARREADWRITE_TEXT = parallel;
 
 			TestConfiguration config = getTestConfiguration(getTestName());
-
 			loadTestConfiguration(config);
+			setOutputBuffering(true); //otherwise NPEs
 
 			String HOME = SCRIPT_DIR + TEST_DIR;
 			String inputMatrixNameNoExtension = HOME + INPUT_DIR + getInputCSVFileName();
@@ -82,18 +82,19 @@ public abstract class ReadCSVTest extends CSVTestBase {
 			String dmlOutput = output("dml.scalar");
 			String rOutput = output("R.scalar");
 
+			String sep = getId() == 2 ? ";" : ",";
+			
 			fullDMLScriptName = HOME + getTestName() + "_" + testNumber + ".dml";
-			programArgs = new String[] {"-args", inputMatrixNameWithExtension, dmlOutput};
+			programArgs = new String[] {"-args", inputMatrixNameWithExtension, dmlOutput, sep};
 
 			fullRScriptName = HOME + "csv_verify2.R";
-			rCmd = "Rscript" + " " + fullRScriptName + " " + inputMatrixNameNoExtension + ".single.csv " + rOutput;
+			rCmd = "Rscript "+fullRScriptName+" "+inputMatrixNameNoExtension+".single.csv "+rOutput;
 
 			output = runTest(true, false, null, -1).toString();
 			runRScript(true);
 
 			double dmlScalar = TestUtils.readDMLScalar(dmlOutput);
 			double rScalar = TestUtils.readRScalar(rOutput);
-
 			TestUtils.compareScalars(dmlScalar, rScalar, eps);
 		}
 		finally {

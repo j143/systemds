@@ -27,10 +27,10 @@ import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.controlprogram.context.SparkExecutionContext;
 import org.apache.sysds.runtime.instructions.InstructionUtils;
 import org.apache.sysds.runtime.instructions.cp.CPOperand;
-import org.apache.sysds.runtime.instructions.spark.CompressionSPInstruction.CompressionFunction;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysds.runtime.matrix.operators.Operator;
+import org.apache.sysds.utils.DMLCompressionStatistics;
 
 public class DeCompressionSPInstruction extends UnarySPInstruction {
 
@@ -51,23 +51,32 @@ public class DeCompressionSPInstruction extends UnarySPInstruction {
 		// get input rdd handle
 		JavaPairRDD<MatrixIndexes, MatrixBlock> in = sec.getBinaryMatrixBlockRDDHandleForVariable(input1.getName());
 
-		// execute compression
-		JavaPairRDD<MatrixIndexes, MatrixBlock> out = in.mapValues(new CompressionFunction());
+		// execute decompression
+		JavaPairRDD<MatrixIndexes, MatrixBlock> out = 
+			in.mapValues(new DeCompressionFunction());
 
+		DMLCompressionStatistics.addDecompressSparkCount();
 		// set outputs
+		updateUnaryOutputDataCharacteristics(sec);
 		sec.setRDDHandleForVariable(output.getName(), out);
 		sec.addLineageRDD(input1.getName(), output.getName());
 	}
 
 	public static class DeCompressionFunction implements Function<MatrixBlock, MatrixBlock> {
-		private static final long serialVersionUID = -6528833083609413922L;
+		private static final long serialVersionUID = -65288330836413922L;
+
+		public DeCompressionFunction(){
+			// do nothing.
+		}
 
 		@Override
 		public MatrixBlock call(MatrixBlock arg0) throws Exception {
-			if(arg0 instanceof CompressedMatrixBlock){
+			if(arg0 instanceof CompressedMatrixBlock) 
 				return ((CompressedMatrixBlock) arg0).decompress(OptimizerUtils.getConstrainedNumThreads(-1));
-			}else{
-				return arg0;
+			else{
+				MatrixBlock ret = new MatrixBlock();
+				ret.copy(arg0);
+				return ret;
 			}
 		}
 	}

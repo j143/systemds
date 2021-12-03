@@ -22,6 +22,7 @@ package org.apache.sysds.hops.codegen.cplan;
 import java.util.ArrayList;
 
 import org.apache.sysds.common.Types.AggOp;
+import org.apache.sysds.hops.codegen.SpoofCompiler;
 import org.apache.sysds.hops.codegen.SpoofCompiler.GeneratorAPI;
 import org.apache.sysds.hops.codegen.SpoofFusedOp.SpoofOutputDimsType;
 import org.apache.sysds.runtime.codegen.SpoofCellwise;
@@ -30,6 +31,25 @@ import org.apache.sysds.runtime.util.UtilFunctions;
 
 public class CNodeCell extends CNodeTpl 
 {
+	protected static final String JAVA_TEMPLATE = 
+		  "package codegen;\n"
+		+ "import org.apache.sysds.runtime.codegen.LibSpoofPrimitives;\n"
+		+ "import org.apache.sysds.runtime.codegen.SpoofCellwise;\n"
+		+ "import org.apache.sysds.runtime.codegen.SpoofCellwise.AggOp;\n"
+		+ "import org.apache.sysds.runtime.codegen.SpoofCellwise.CellType;\n"
+		+ "import org.apache.sysds.runtime.codegen.SpoofOperator.SideInput;\n"
+		+ "import org.apache.commons.math3.util.FastMath;\n"
+		+ "\n"
+		+ "public final class %TMP% extends SpoofCellwise {\n" 
+		+ "  public %TMP%() {\n"
+		+ "    super(CellType.%TYPE%, %SPARSE_SAFE%, %SEQ%, %AGG_OP_NAME%);\n"
+		+ "  }\n"
+		+ "  protected double genexec(double a, SideInput[] b, double[] scalars, int m, int n, long grix, int rix, int cix) { \n"
+		+ "%BODY_dense%"
+		+ "    return %OUT%;\n"
+		+ "  }\n"
+		+ "}\n";
+	
 	private CellType _type = null;
 	private AggOp _aggOp = null;
 	private boolean _sparseSafe = false;
@@ -119,36 +139,51 @@ public class CNodeCell extends CNodeTpl
 	public String codegen(boolean sparse, GeneratorAPI _api) {
 		api = _api;
 
-		String tmp = getLanguageTemplateClass(this, api).getTemplate(_type);
+		String tmp = getLanguageTemplate(this, api);
 
 		//generate dense/sparse bodies
 		String tmpDense = _output.codegen(false, api);
+		// TODO: workaround to fix name clash of cell and row template
+		if(api == GeneratorAPI.CUDA)
+			tmpDense = tmpDense.replace("a.vals(0)", "a");
 		_output.resetGenerated();
-
-		tmp = tmp.replace("%TMP%", createVarname());
+		
+		String varName = (getVarname() == null) ?
+			createVarname() : getVarname();
+		tmp = tmp.replace(api.isJava() ? 
+			"%TMP%" : "/*%TMP%*/SPOOF_OP_NAME", varName);
+		
+		if(tmpDense.contains("grix"))
+			tmp = tmp.replace("//%NEED_GRIX%", "\t\tuint32_t grix=_grix + rix;");
+		else
+			tmp = tmp.replace("//%NEED_GRIX%", "");
+		tmp = tmp.replace("//%NEED_RIX%", "");
+		tmp = tmp.replace("//%NEED_CIX%", "");
+		
 		tmp = tmp.replace("%BODY_dense%", tmpDense);
 		
-		//return last TMP
-		tmp = tmp.replaceAll("%OUT%", _output.getVarname());
+		//Return last TMP. Square it for CUDA+SUM_SQ
+		tmp = (api.isJava() || _aggOp != AggOp.SUM_SQ) ? tmp.replaceAll("%OUT%", _output.getVarname()) :
+			tmp.replaceAll("%OUT%", _output.getVarname() + " * " + _output.getVarname());
 
 		//replace meta data information
 		tmp = tmp.replaceAll("%TYPE%", getCellType().name());
 		tmp = tmp.replace("%AGG_OP_NAME%", (_aggOp != null) ? "AggOp." + _aggOp.name() : "null");
 		tmp = tmp.replace("%SPARSE_SAFE%", String.valueOf(isSparseSafe()));
 		tmp = tmp.replace("%SEQ%", String.valueOf(containsSeq()));
-
+		
+		// maybe empty lines
+		//tmp = tmp.replaceAll("(?m)^[ \t]*\r?\n", "");
+		
 		if(api == GeneratorAPI.CUDA) {
 			// ToDo: initial_value is misused to pass VT (values per thread) to no_agg operator
 			String agg_op = "IdentityOp";
-			String initial_value = "(T)4.0";
+			String initial_value = "(T)1.0";
 			if(_aggOp != null)
 			switch(_aggOp) {
 				case SUM:
-					agg_op = "SumOp";
-					initial_value = "(T)0.0";
-					break;
 				case SUM_SQ:
-					agg_op = "SumSqOp";
+					agg_op = "SumOp";
 					initial_value = "(T)0.0";
 					break;
 				case MIN:
@@ -240,4 +275,13 @@ public class CNodeCell extends CNodeTpl
 	public boolean isSupported(GeneratorAPI api) {
 		return (api == GeneratorAPI.CUDA || api == GeneratorAPI.JAVA) && _output.isSupported(api);
 	}
+	
+	public int compile(GeneratorAPI api, String src) {
+		if(api == GeneratorAPI.CUDA)
+			return compile_nvrtc(SpoofCompiler.native_contexts.get(api), _genVar, src, _type.getValue(), 
+				_aggOp != null ? _aggOp.getValue() : 0, _sparseSafe);
+		return -1;
+	}
+	
+	private native int compile_nvrtc(long context, String name, String src, int type, int agg_op, boolean sparseSafe);
 }

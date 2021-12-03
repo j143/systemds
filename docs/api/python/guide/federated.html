@@ -7,7 +7,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   
-  <title>Federated Environment &mdash; SystemDS 2.0.0 documentation</title>
+  <title>Federated Environment &mdash; SystemDS 2.3.0-SNAPSHOT documentation</title>
   
 
   
@@ -96,27 +96,21 @@
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="algorithms_basics.html">Built-in Algorithms</a></li>
-</ul>
-<p class="caption"><span class="caption-text">Onnx SystemDS</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="../onnx_systemds/onnx_systemds.html">QuickStart Onnx</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../onnx_systemds/onnx_systemds_design.html">Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="python_end_to_end_tut.html">Python end-to-end tutorial</a></li>
 </ul>
 <p class="caption"><span class="caption-text">API</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="../api/operator/algorithms.html">Algorithms</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../api/context/systemds_context.html">SystemDSContext</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/matrix/matrix.html">Matrix</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/matrix/federated.html">Federated</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/operator/operation_node.html">Operation Node</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/onnx_systemds/convert.html">Convert</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/onnx_systemds/onnx_helper.html">Onnx Helper</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/onnx_systemds/operator_gen.html">Operator Gen</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/onnx_systemds/render.html">Render</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../api/onnx_systemds/util.html">Util</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/operator/algorithms.html">Algorithms</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/operator/node/matrix.html">Matrix</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/operator/node/frame.html">Frame</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/operator/node/list.html">List</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/operator/node/scalar.html">Scalar</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/operator/node/source.html">Source</a></li>
 </ul>
 <p class="caption"><span class="caption-text">Internals API</span></p>
 <ul>
+<li class="toctree-l1"><a class="reference internal" href="../api/operator/operation_node.html">Operation Node</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../api/script_building/dag.html">Dag</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../api/script_building/script.html">Script</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../api/utils/converters.html">Converters</a></li>
@@ -194,9 +188,9 @@ a running federated worker.</p>
 <div class="section" id="start-federated-worker">
 <h2>Start Federated worker<a class="headerlink" href="#start-federated-worker" title="Permalink to this headline">¶</a></h2>
 <p>To start a federated worker, you first have to setup your environment variables.
-A simple guide to do this is in the SystemDS <a class="reference external" href="https://github.com/apache/systemds/tree/master/bin/">Repository</a>.</p>
+A simple guide to do this is in the SystemDS <a class="reference external" href="https://github.com/apache/systemds/tree/main/bin/">Repository</a>.</p>
 <p>If that is setup correctly simply start a worker using the following command.
-Here the <code class="docutils literal notranslate"><span class="pre">8001</span></code> refer to the port used by the worker.:</p>
+Here the <code class="docutils literal notranslate"><span class="pre">8001</span></code> refer to the port used by the worker.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">systemds</span> <span class="n">WORKER</span> <span class="mi">8001</span>
 </pre></div>
 </div>
@@ -205,41 +199,42 @@ Here the <code class="docutils literal notranslate"><span class="pre">8001</span
 <h2>Simple Aggregation Example<a class="headerlink" href="#simple-aggregation-example" title="Permalink to this headline">¶</a></h2>
 <p>In this example we use a single federated worker, and aggregate the sum of its data.</p>
 <p>First we need to create some data for our federated worker to use.
-In this example we simply use Numpy to create a <code class="docutils literal notranslate"><span class="pre">test.csv</span></code> file:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Import numpy</span>
-<span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
-<span class="n">a</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([[</span><span class="mi">1</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">3</span><span class="p">],</span> <span class="p">[</span><span class="mi">4</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">6</span><span class="p">],</span> <span class="p">[</span><span class="mi">7</span><span class="p">,</span><span class="mi">8</span><span class="p">,</span><span class="mi">9</span><span class="p">]])</span>
-<span class="n">np</span><span class="o">.</span><span class="n">savetxt</span><span class="p">(</span><span class="s2">&quot;temp/test.csv&quot;</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">delimiter</span><span class="o">=</span><span class="s2">&quot;,&quot;</span><span class="p">)</span>
-</pre></div>
-</div>
+In this example we simply use Numpy to create a <code class="docutils literal notranslate"><span class="pre">test.csv</span></code> file.</p>
 <p>Currently we also require a metadata file for the federated worker.
 This should be located next to the <code class="docutils literal notranslate"><span class="pre">test.csv</span></code> file called <code class="docutils literal notranslate"><span class="pre">test.csv.mtd</span></code>.
-To make this simply execute the following:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">echo</span> <span class="s1">&#39;{ &quot;format&quot;:&quot;csv&quot;, &quot;header&quot;:false, &quot;rows&quot;:3, &quot;cols&quot;:3 }&#39;</span> <span class="o">&gt;</span> <span class="n">temp</span><span class="o">/</span><span class="n">test</span><span class="o">.</span><span class="n">csv</span><span class="o">.</span><span class="n">mtd</span>
+To make both the data and metadata simply execute the following</p>
+<div class="code python highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Python</span>
+<span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isdir</span><span class="p">(</span><span class="s2">&quot;temp&quot;</span><span class="p">):</span>
+    <span class="n">os</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="s2">&quot;temp&quot;</span><span class="p">)</span>
+<span class="n">a</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">([[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="p">[</span><span class="mi">4</span><span class="p">,</span> <span class="mi">5</span><span class="p">,</span> <span class="mi">6</span><span class="p">],</span> <span class="p">[</span><span class="mi">7</span><span class="p">,</span> <span class="mi">8</span><span class="p">,</span> <span class="mi">9</span><span class="p">]])</span>
+<span class="n">np</span><span class="o">.</span><span class="n">savetxt</span><span class="p">(</span><span class="s2">&quot;temp/test.csv&quot;</span><span class="p">,</span> <span class="n">a</span><span class="p">,</span> <span class="n">delimiter</span><span class="o">=</span><span class="s2">&quot;,&quot;</span><span class="p">)</span>
+<span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;temp/test.csv.mtd&quot;</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">mtd</span><span class="p">:</span>
+    <span class="n">mtd</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s1">&#39;{ &quot;format&quot;:&quot;csv&quot;, &quot;header&quot;:false, &quot;rows&quot;:3, &quot;cols&quot;:3 }&#39;</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>After creating our data we the federated worker becomes able to execute federated instructions.
-The aggregated sum using federated instructions in python SystemDS is done as follows:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Import numpy and SystemDS federated</span>
+<p>After creating our data the federated worker becomes able to execute federated instructions.
+The aggregated sum using federated instructions in python SystemDS is done as follows</p>
+<div class="code python highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Python</span>
 <span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
-<span class="kn">from</span> <span class="nn">systemds.matrix</span> <span class="kn">import</span> <span class="n">Federated</span>
 <span class="kn">from</span> <span class="nn">systemds.context</span> <span class="kn">import</span> <span class="n">SystemDSContext</span>
 
 <span class="c1"># Create a federated matrix</span>
-<span class="c1">## Indicate the dimensions of the data:</span>
-<span class="c1">### Here the first list in the tuple is the top left Coordinate,</span>
-<span class="c1">### and the second the bottom left coordinate.</span>
-<span class="c1">### It is ordered as [col,row].</span>
-<span class="n">dims</span> <span class="o">=</span> <span class="p">([</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">])</span>
+<span class="c1"># Indicate the dimensions of the data:</span>
+<span class="c1"># Here the first list in the tuple is the top left Coordinate,</span>
+<span class="c1"># and the second the bottom left coordinate.</span>
+<span class="c1"># It is ordered as [col,row].</span>
+<span class="n">dims</span> <span class="o">=</span> <span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">])</span>
 
-<span class="c1">## Specify the address + file path from worker:</span>
+<span class="c1"># Specify the address + file path from worker:</span>
 <span class="n">address</span> <span class="o">=</span> <span class="s2">&quot;localhost:8001/temp/test.csv&quot;</span>
 
 <span class="k">with</span> <span class="n">SystemDSContext</span><span class="p">()</span> <span class="k">as</span> <span class="n">sds</span><span class="p">:</span>
-  <span class="n">fed_a</span> <span class="o">=</span> <span class="n">Federated</span><span class="p">(</span><span class="n">sds</span><span class="p">,</span> <span class="p">[</span><span class="n">address</span><span class="p">],</span> <span class="p">[</span><span class="n">dims</span><span class="p">])</span>
-  <span class="c1"># Sum the federated matrix and call compute to execute</span>
-  <span class="nb">print</span><span class="p">(</span><span class="n">fed_a</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="o">.</span><span class="n">compute</span><span class="p">())</span>
-  <span class="c1"># Result should be 45.</span>
+    <span class="n">fed_a</span> <span class="o">=</span> <span class="n">sds</span><span class="o">.</span><span class="n">federated</span><span class="p">([</span><span class="n">address</span><span class="p">],</span> <span class="p">[</span><span class="n">dims</span><span class="p">])</span>
+    <span class="c1"># Sum the federated matrix and call compute to execute</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">fed_a</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="o">.</span><span class="n">compute</span><span class="p">())</span>
+    <span class="c1"># Result should be 45.</span>
 </pre></div>
 </div>
 </div>
@@ -248,16 +243,15 @@ The aggregated sum using federated instructions in python SystemDS is done as fo
 <p>In this example we multiply matrices that are located in different federated environments.</p>
 <p>Using the data created from the last example we can simulate
 multiple federated workers by starting multiple ones on different ports.
-Start with 3 different terminals, and run one federated environment in each.:</p>
+Start with 3 different terminals, and run one federated environment in each.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">systemds</span> <span class="n">WORKER</span> <span class="mi">8001</span>
 <span class="n">systemds</span> <span class="n">WORKER</span> <span class="mi">8002</span>
 <span class="n">systemds</span> <span class="n">WORKER</span> <span class="mi">8003</span>
 </pre></div>
 </div>
-<p>Once all three workers are up and running we can leverage all three in the following example:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Import numpy and SystemDS federated</span>
+<p>Once all three workers are up and running we can leverage all three in the following example</p>
+<div class="code python highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Python</span>
 <span class="kn">import</span> <span class="nn">numpy</span> <span class="k">as</span> <span class="nn">np</span>
-<span class="kn">from</span> <span class="nn">systemds.matrix</span> <span class="kn">import</span> <span class="n">Federated</span>
 <span class="kn">from</span> <span class="nn">systemds.context</span> <span class="kn">import</span> <span class="n">SystemDSContext</span>
 
 <span class="n">addr1</span> <span class="o">=</span> <span class="s2">&quot;localhost:8001/temp/test.csv&quot;</span>
@@ -268,21 +262,24 @@ Start with 3 different terminals, and run one federated environment in each.:</p
 <span class="c1"># Note that the two federated matrices are stacked on top of each other</span>
 
 <span class="k">with</span> <span class="n">SystemDSContext</span><span class="p">()</span> <span class="k">as</span> <span class="n">sds</span><span class="p">:</span>
-  <span class="n">fed_a</span> <span class="o">=</span> <span class="n">Federated</span><span class="p">(</span><span class="n">sds</span><span class="p">,</span>
-    <span class="p">[</span><span class="n">addr1</span><span class="p">,</span> <span class="n">addr2</span><span class="p">],</span>
-    <span class="p">[([</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">]),</span> <span class="p">([</span><span class="mi">0</span><span class="p">,</span><span class="mi">3</span><span class="p">],</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span><span class="mi">6</span><span class="p">])])</span>
-
-  <span class="n">fed_b</span> <span class="o">=</span> <span class="n">Federated</span><span class="p">(</span><span class="n">sds</span><span class="p">,</span>
-    <span class="p">[</span><span class="n">addr1</span><span class="p">,</span> <span class="n">addr3</span><span class="p">],</span>
-    <span class="p">[([</span><span class="mi">0</span><span class="p">,</span><span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span><span class="mi">3</span><span class="p">]),</span> <span class="p">([</span><span class="mi">0</span><span class="p">,</span><span class="mi">3</span><span class="p">],</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span><span class="mi">6</span><span class="p">])])</span>
-
-  <span class="c1"># Multiply, compute and print.</span>
-  <span class="n">res</span> <span class="o">=</span> <span class="p">(</span><span class="n">fed_a</span> <span class="o">*</span> <span class="n">fed_b</span><span class="p">)</span><span class="o">.</span><span class="n">compute</span><span class="p">()</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="n">res</span><span class="p">)</span>
+    <span class="c1"># federated data on three locations</span>
+    <span class="n">fed</span> <span class="o">=</span> <span class="n">sds</span><span class="o">.</span><span class="n">federated</span><span class="p">([</span><span class="n">addr1</span><span class="p">,</span> <span class="n">addr2</span><span class="p">,</span> <span class="n">addr3</span><span class="p">],</span> <span class="p">[</span>
+        <span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">]),</span>
+        <span class="p">([</span><span class="mi">3</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">3</span><span class="p">]),</span>
+        <span class="p">([</span><span class="mi">6</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">9</span><span class="p">,</span> <span class="mi">3</span><span class="p">])])</span>
+    <span class="c1"># local matrix to multiply with</span>
+    <span class="n">loc</span> <span class="o">=</span> <span class="n">sds</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span>
+      <span class="p">[</span><span class="mi">1</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">6</span><span class="p">,</span><span class="mi">7</span><span class="p">,</span><span class="mi">8</span><span class="p">,</span><span class="mi">9</span><span class="p">],</span>
+      <span class="p">[</span><span class="mi">1</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">6</span><span class="p">,</span><span class="mi">7</span><span class="p">,</span><span class="mi">8</span><span class="p">,</span><span class="mi">9</span><span class="p">],</span>
+      <span class="p">[</span><span class="mi">1</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">4</span><span class="p">,</span><span class="mi">5</span><span class="p">,</span><span class="mi">6</span><span class="p">,</span><span class="mi">7</span><span class="p">,</span><span class="mi">8</span><span class="p">,</span><span class="mi">9</span><span class="p">]</span>
+      <span class="p">]))</span>
+    <span class="c1"># Multiply local and federated</span>
+    <span class="n">ret</span> <span class="o">=</span> <span class="n">loc</span> <span class="o">@</span> <span class="n">fed</span>
+    <span class="c1"># execute the lazy script and print</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">ret</span><span class="o">.</span><span class="n">compute</span><span class="p">())</span>
 </pre></div>
 </div>
-<p>The print should look like:</p>
+<p>The print should look like</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">[[</span> <span class="mf">1.</span>  <span class="mf">4.</span>  <span class="mf">9.</span>  <span class="mf">1.</span>  <span class="mf">4.</span>  <span class="mf">9.</span><span class="p">]</span>
  <span class="p">[</span><span class="mf">16.</span> <span class="mf">25.</span> <span class="mf">36.</span> <span class="mf">16.</span> <span class="mf">25.</span> <span class="mf">36.</span><span class="p">]</span>
  <span class="p">[</span><span class="mf">49.</span> <span class="mf">64.</span> <span class="mf">81.</span> <span class="mf">49.</span> <span class="mf">64.</span> <span class="mf">81.</span><span class="p">]]</span>
@@ -318,7 +315,7 @@ that you have:</p>
   <div role="contentinfo">
     <p>
         
-        &copy; Copyright 2020, Apache SystemDS
+        &copy; Copyright 2021, Apache SystemDS
 
     </p>
   </div>

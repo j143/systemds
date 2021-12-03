@@ -869,6 +869,7 @@ SystemDS supports 4 file formats:
   * Matrix Market (coordinate)
   * Text (i,j,v)
   * Binary
+  * HDF5
 
 The CSV format is a standard text-based format where columns are separated by delimiter characters, typically commas, and
 rows are represented on separate lines.
@@ -888,6 +889,10 @@ coordinate format, except metadata is stored in a separate file rather than in t
 can span multiple part files.
 
 The binary format can only be read and written by SystemDS.
+
+Hierarchical Data Format (HDF) is a file format designed to store and organize large amounts of data. SystemDS supports 
+some features of the HDF5 like two dimension data (Matrix), matrix with FP64 (double) data type, 
+single dataset, single group, and contiguous dataset.
 
 Let's look at a matrix and examples of its data represented in the supported formats with corresponding metadata. In the table below, we have
 a matrix consisting of 4 rows and 3 columns.
@@ -992,6 +997,24 @@ Below, we have examples of this matrix in the CSV, Matrix Market, IJV, and Binar
 	    "format": "binary",
 	    "author": "SystemDS",
 	    "created": "2017-01-01 00:00:01 PST"
+	}
+</div>
+
+<div data-lang="HDF5" markdown="1">
+	HDF5 is not a text-based format.
+</div>
+
+<div data-lang="HDF5 MTD" markdown="1">
+	{
+	    "data_type": "matrix",
+	    "value_type": "double",
+	    "rows": 4,
+	    "cols": 3,
+	    "nnz": 6,
+	    "dataset": "systemds",
+	    "format": "hdf5",
+	    "author": "SystemDS",
+	    "created": "2021-06-11 13:36:15 CET"
 	}
 </div>
 
@@ -1615,7 +1638,7 @@ Scheme | Definition
 -------- | -----------
 Disjoint_Contiguous | For each worker, use a right indexing operation X[beg:end,] to obtain contiguous, non-overlapping partitions of rows
 Disjoint_Round_Robin | For each worker, use a permutation multiply or simpler a removeEmpty such as removeEmpty(target=X, margin=rows, select=(seq(1,nrow(X))%%k)==id)
-Disjoint_Random | For each worker, use a permutation multiply P[beg:end,] %*% X, where P is constructed for example with P=table(seq(1,nrow(X),sample(nrow(X), nrow(X)))), i.e., sampling without replacement to ensure disjointness
+Disjoint_Random | For each worker, use a permutation multiply P[beg:end,] %*% X, where P is constructed for example with P=table(seq(1,nrow(X)),sample(nrow(X), nrow(X))), i.e., sampling without replacement to ensure disjointness
 Overlap_Reshuffle | Similar to the above, except to create a new permutation matrix for each worker and without the indexing on P
 
 ### Other Built-In Functions
@@ -2026,15 +2049,22 @@ The following example uses <code>transformapply()</code> with the input matrix a
 
 ### Processing Frames
 
-The built-in function <code>map()</code> provides support for the lambda expressions.
-
-**Table F5**: Frame map built-in function
+**Table F5**: Frame processing built-in functions
 
 Function | Description | Parameters | Example
 -------- | ----------- | ---------- | -------
-map() | It will execute the given lambda expression on a frame.| Input: (X &lt;frame&gt;, y &lt;String&gt;) <br/>Output: &lt;frame&gt;. <br/> X is a frame and <br/>y is a String containing the lambda expression to be executed on frame X. | X = read("file1", data_type="frame", rows=2, cols=3, format="binary") <br/> y = "lambda expression" <br/> Z = map(X, y) <br/> # Dimensions of Z = Dimensions of X; <br/> example: <br/> <code> Z = map(X, "x -> x.charAt(2)")     </code>
+map() | It will execute the given lambda expression on a frame.| Input: (X &lt;frame&gt;, y &lt;String&gt;) <br/>Output: &lt;frame&gt;. <br/> X is a frame and <br/>y is a String containing the lambda expression to be executed on frame X. | [map](#map) 
+tokenize() | Transforms a frame to tokenized frame using specification. Tokenization is valid only for string columns. | Input:<br/> target = &lt;frame&gt; <br/> spec = &lt;json specification&gt; <br/> Outputs: &lt;matrix&gt;, &lt;frame&gt; | [tokenize](#tokenize)
 
-Example let X = 
+#### map
+
+The built-in function <code>map()</code> provides support for the lambda expressions.
+
+Simple example
+
+    X = read("file1", data_type="frame", rows=2, cols=3, format="binary") <br/> y = "lambda expression" <br/> Z = map(X, y) <br/> # Dimensions of Z = Dimensions of X; <br/> example: <br/> <code> Z = map(X, "x -> x.charAt(2)")     </code>
+
+Example with data let X = 
 
     # FRAME: nrow = 10, ncol = 1
     # C1 
@@ -2066,6 +2096,62 @@ print(toString(Z)) </code>
       WEST
       WEST
       EAST
+
+It is also possible to compute Jaccard similarity matrix of rows of a vector.
+<code> dist = map(Xi, "(x, y) -> UtilFunctions.jaccardSim(x, y)") <br/> 
+print(toString(dist)) </code>
+     
+    # FRAME: nrow = 10, ncol = 10 
+    # DOUBLE 
+    # 0,000 0,286 0,125 0,600 0,286 0,125 0,125 1,000 1,000 0,600 
+      0,286 0,000 0,429 0,286 1,000 0,429 0,429 0,286 0,286 0,286 
+      0,125 0,429 0,000 0,125 0,429 1,000 1,000 0,125 0,125 0,125 
+      0,600 0,286 0,125 0,000 0,286 0,125 0,125 0,600 0,600 1,000 
+      0,286 1,000 0,429 0,286 0,000 0,429 0,429 0,286 0,286 0,286 
+      0,125 0,429 1,000 0,125 0,429 0,000 1,000 0,125 0,125 0,125 
+      0,125 0,429 1,000 0,125 0,429 1,000 0,000 0,125 0,125 0,125 
+      1,000 0,286 0,125 0,600 0,286 0,125 0,125 0,000 1,000 0,600 
+      1,000 0,286 0,125 0,600 0,286 0,125 0,125 1,000 0,000 0,600 
+      0,600 0,286 0,125 1,000 0,286 0,125 0,125 0,600 0,600 0,000
+    #
+    
+#### tokenize
+
+Simple example
+
+    X = read(“file1”, data_type=”frame”, rows=3, cols=2, format=”binary”);
+    spec = "{\"algo\": \"whitespace\",\"out\": \"count\",\"id_cols\": [1],\"tokenize_col\": 2}";
+    Y = tokenize(target=X, spec=jspec, max_tokens=1000);
+    write(Y, "file2");
+    
+Example spec
+
+    {
+      "algo": "split",
+      "out": "count",
+      "id_cols": [1],
+      "tokenize_col": 2
+    }
+
+The frame is tokenized along the `tokenize_col` and replicates the `id_cols`.
+
+The output frame can be converted into a matrix with the transform functions. For instance, using `transformencode` with `recode`, followed by `table`.
+Alternatively, for certain algorithms by specifying `"format_wide": true` expands the tokens in the columns instead of creating new rows.
+
+**Table F6**: Tokenizer Algorithms for `algo` field
+
+Algorithm | Algo Description | Parameters | Spec Example
+-------- | ----------- | ---------- | -------
+whitespace | Splits the tokens along whitespace characters. | None | `"{\"algo\": \"whitespace\",\"out\": \"count\",\"out_params\": {\"sort_alpha\": true},\"id_cols\": \[2\],\"tokenize_col\": 3}"`
+ngram | Pretokenizes using `whitespace` then splits the tokens into ngrams | `min_gram` and `max_gram` specify the length of the ngrams. | `"{\"algo\": \"ngram\",\"algo_params\": {\"min_gram\": 2,\"max_gram\": 3},\"out\": \"position\",\"id_cols\": \[1,2\],\"tokenize_col\": 3}"`
+
+**Table F7**: Output Representations of Tokens for `out` field
+
+Out Representation | Format Description | Parameters | Format Example
+-------- | ----------- | ---------- | -------
+count | Outputs the `id_cols`, the `tokens`, and the number of token `occurences` per document. | `sort_alpha` specifies whether the tokens are sorted alphanumerically per document. | `id1,id2,token1,3`
+position | Outputs the `id_cols`, the `position` within the document, and the `token`. | None | `id1,id2,1,token1`
+hash | Outputs the `id_cols`, the `index` of non-zero hashes, and the `hashes` | `num_features` specifies the number of output features | `id1,id2,2,64`
 
 
 * * *

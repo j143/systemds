@@ -29,7 +29,7 @@ import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.hops.AggBinaryOp.SparkAggType;
 import org.apache.sysds.hops.rewrite.HopRewriteUtils;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.PartialAggregate;
 import org.apache.sysds.lops.TernaryAggregate;
 import org.apache.sysds.lops.UAggOuterChain;
@@ -123,7 +123,7 @@ public class AggUnaryOp extends MultiThreadedHop
 			ExecType et = optFindExecType();
 			Hop input = getInput().get(0);
 			
-			if ( et == ExecType.CP || et == ExecType.GPU ) 
+			if ( et == ExecType.CP || et == ExecType.GPU || et == ExecType.FED )
 			{
 				Lop agg1 = null; 
 				if( isTernaryAggregateRewriteApplicable() ) {
@@ -151,14 +151,13 @@ public class AggUnaryOp extends MultiThreadedHop
 					agg1 = new PartialAggregate(input.constructLops(),
 							_op, _direction, getDataType(),getValueType(), et, k);
 				}
-				
+
 				setOutputDimensions(agg1);
 				setLineNumbers(agg1);
 				setLops(agg1);
 				
-				if (getDataType() == DataType.SCALAR) {
+				if (getDataType() == DataType.SCALAR)
 					agg1.getOutputParameters().setDimensions(1, 1, getBlocksize(), getNnz());
-				}
 			}
 			else if( et == ExecType.SPARK )
 			{
@@ -209,6 +208,7 @@ public class AggUnaryOp extends MultiThreadedHop
 					}
 				}
 			}
+			else throw new HopsException("ExecType " + et + " not recognized in " + this.toString() );
 		} 
 		catch (Exception e) {
 			throw new HopsException(this.printErrorLocation() + "In AggUnary Hop, error constructing Lops " , e);
@@ -216,7 +216,7 @@ public class AggUnaryOp extends MultiThreadedHop
 		
 		//add reblock/checkpoint lops if necessary
 		constructAndSetLopsDataFlowProperties();
-		
+
 		//return created lops
 		return getLops();
 	}
@@ -339,7 +339,7 @@ public class AggUnaryOp extends MultiThreadedHop
 	
 
 	@Override
-	protected ExecType optFindExecType() {
+	protected ExecType optFindExecType(boolean transitive) {
 		
 		checkAndSetForcedPlatform();
 		
@@ -372,16 +372,22 @@ public class AggUnaryOp extends MultiThreadedHop
 
 		//spark-specific decision refinement (execute unary aggregate w/ spark input and 
 		//single parent also in spark because it's likely cheap and reduces data transfer)
-		if( _etype == ExecType.CP && _etypeForced != ExecType.CP
-			&& !(getInput().get(0) instanceof DataOp)  //input is not checkpoint
-			&& (getInput().get(0).getParent().size()==1 //uagg is only parent, or 
-			   || !requiresAggregation(getInput().get(0), _direction)) //w/o agg
-			&& getInput().get(0).optFindExecType() == ExecType.SPARK )					
+		//we also allow multiple parents, if all other parents are already in Spark mode
+		if( transitive && _etype == ExecType.CP && _etypeForced != ExecType.CP
+			&& ((!(getInput(0) instanceof DataOp)  //input is not checkpoint
+				&& getInput(0).optFindExecType() == ExecType.SPARK)
+				|| (getInput(0) instanceof DataOp && ((DataOp)getInput(0)).hasOnlyRDD()))
+			&& (getInput(0).getParent().size()==1 //uagg is only parent, or 
+				|| getInput(0).getParent().stream().filter(h -> h != this)
+					.allMatch(h -> h.optFindExecType(false) == ExecType.SPARK)
+				|| !requiresAggregation(getInput(0), _direction)) ) //w/o agg
 		{
 			//pull unary aggregate into spark 
 			_etype = ExecType.SPARK;
 		}
-		
+
+		updateETFed();
+
 		//mark for recompile (forever)
 		setRequiresRecompileIfNecessary();
 		

@@ -36,6 +36,7 @@ import org.apache.sysds.runtime.instructions.cp.IntObject;
 import org.apache.sysds.runtime.instructions.cp.ScalarObject;
 import org.apache.sysds.runtime.lineage.Lineage;
 import org.apache.sysds.runtime.lineage.LineageDedupUtils;
+import org.apache.sysds.runtime.util.UtilFunctions;
 
 public class ForProgramBlock extends ProgramBlock
 {
@@ -100,15 +101,16 @@ public class ForProgramBlock extends ProgramBlock
 	@Override
 	public void execute(ExecutionContext ec) {
 		// evaluate from, to, incr only once (assumption: known at for entry)
-		IntObject from = executePredicateInstructions( 1, _fromInstructions, ec );
-		IntObject to   = executePredicateInstructions( 2, _toInstructions, ec );
-		IntObject incr = (_incrementInstructions == null || _incrementInstructions.isEmpty()) ? 
+		ScalarObject from = executePredicateInstructions( 1, _fromInstructions, ec, false);
+		ScalarObject to   = executePredicateInstructions( 2, _toInstructions, ec, false);
+		ScalarObject incr = (_incrementInstructions == null || _incrementInstructions.isEmpty()) ? 
 			new IntObject((from.getLongValue()<=to.getLongValue()) ? 1 : -1) :
-			executePredicateInstructions( 3, _incrementInstructions, ec );
+			executePredicateInstructions( 3, _incrementInstructions, ec, false);
 		
-		if ( incr.getLongValue() == 0 ) //would produce infinite loop
-			throw new DMLRuntimeException(printBlockErrorLocation() +  "Expression for increment "
-				+ "of variable '" + _iterPredVar + "' must evaluate to a non-zero value.");
+		long numIterations = UtilFunctions.getSeqLength(
+			from.getDoubleValue(), to.getDoubleValue(), incr.getDoubleValue(), false);
+		if( numIterations <= 0 )
+			return;
 		
 		// execute for loop
 		try
@@ -163,13 +165,13 @@ public class ForProgramBlock extends ProgramBlock
 		}
 		
 		//execute exit instructions
-		executeExitInstructions(_exitInstruction, "for", ec);
+		executeExitInstructions("for", ec);
 	}
 
-	protected IntObject executePredicateInstructions( int pos, ArrayList<Instruction> instructions, ExecutionContext ec )
+	protected ScalarObject executePredicateInstructions( int pos, ArrayList<Instruction> instructions, ExecutionContext ec, boolean downCast )
 	{
-		ScalarObject tmp = null;
-		IntObject ret = null;
+		ScalarObject ret;
+		ValueType vt = downCast ? ValueType.INT64 : null;
 		
 		try
 		{
@@ -190,10 +192,10 @@ public class ForProgramBlock extends ProgramBlock
 					predHops = fsb.getIncrementHops();
 					recompile = fsb.requiresIncrementRecompilation();
 				}
-				tmp = executePredicate(instructions, predHops, recompile, ValueType.INT64, ec);
+				ret = executePredicate(instructions, predHops, recompile, vt, ec);
 			}
 			else
-				tmp = executePredicate(instructions, null, false, ValueType.INT64, ec);
+				ret = executePredicate(instructions, null, false, vt, ec);
 		}
 		catch(Exception ex) {
 			String predNameStr = null;
@@ -205,10 +207,8 @@ public class ForProgramBlock extends ProgramBlock
 		}
 		
 		//final check of resulting int object (guaranteed to be non-null, see executePredicate)
-		if( tmp instanceof IntObject )
-			ret = (IntObject)tmp;
-		else //downcast to int if necessary
-			ret = new IntObject(tmp.getLongValue());
+		if(downCast && !(ret instanceof IntObject)) //downcast to int if necessary
+			ret = new IntObject(ret.getLongValue());
 		
 		return ret;
 	}
@@ -221,14 +221,14 @@ public class ForProgramBlock extends ProgramBlock
 	/**
 	 * Utility class for iterating over positive or negative predicate sequences.
 	 */
-	protected class SequenceIterator implements Iterator<IntObject>, Iterable<IntObject>
+	protected static class SequenceIterator implements Iterator<IntObject>, Iterable<IntObject>
 	{
 		private long _cur = -1;
 		private long _to = -1;
 		private long _incr = -1;
 		private boolean _inuse = false;
 		
-		protected SequenceIterator(IntObject from, IntObject to, IntObject incr) {
+		protected SequenceIterator(ScalarObject from, ScalarObject to, ScalarObject incr) {
 			_cur = from.getLongValue();
 			_to = to.getLongValue();
 			_incr = incr.getLongValue();

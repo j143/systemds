@@ -49,7 +49,6 @@ public class FederatedRemoveEmptyTest extends AutomatedTestBase {
 	public int rows;
 	@Parameterized.Parameter(1)
 	public int cols;
-
 	@Parameterized.Parameter(2)
 	public boolean rowPartitioned;
 
@@ -70,6 +69,11 @@ public class FederatedRemoveEmptyTest extends AutomatedTestBase {
 	@Test
 	public void testRemoveEmptyCP() {
 		runAggregateOperationTest(ExecMode.SINGLE_NODE);
+	}
+
+	@Test
+	public void testRemoveEmptySP() {
+		runAggregateOperationTest(ExecMode.SPARK);
 	}
 
 	private void runAggregateOperationTest(ExecMode execMode) {
@@ -142,7 +146,7 @@ public class FederatedRemoveEmptyTest extends AutomatedTestBase {
 		runTest(null);
 
 		// compare via files
-		compareResults(1e-9);
+		compareResults(1e-9, "DML1", "DML2");
 
 		// check that federated input files are still existing
 		Assert.assertTrue(HDFSTool.existsFileOnHDFS(input("X1")));

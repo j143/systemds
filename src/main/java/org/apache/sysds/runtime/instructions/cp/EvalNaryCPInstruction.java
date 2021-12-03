@@ -25,12 +25,15 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.stream.Collectors;
 
+import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Builtins;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.rewrite.HopRewriteUtils;
 import org.apache.sysds.hops.rewrite.ProgramRewriter;
+import org.apache.sysds.lops.Lop;
 import org.apache.sysds.lops.compile.Dag;
 import org.apache.sysds.parser.DMLProgram;
 import org.apache.sysds.parser.DMLTranslator;
@@ -38,13 +41,17 @@ import org.apache.sysds.parser.FunctionStatementBlock;
 import org.apache.sysds.parser.dml.DmlSyntacticValidator;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.FunctionProgramBlock;
+import org.apache.sysds.runtime.controlprogram.ParForProgramBlock;
 import org.apache.sysds.runtime.controlprogram.Program;
+import org.apache.sysds.runtime.controlprogram.ProgramBlock;
 import org.apache.sysds.runtime.controlprogram.caching.FrameObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
+import org.apache.sysds.runtime.lineage.LineageItem;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.runtime.matrix.operators.Operator;
 import org.apache.sysds.runtime.util.DataConverter;
+import org.apache.sysds.runtime.util.ProgramConverter;
 
 /**
  * Eval built-in function instruction
@@ -52,6 +59,8 @@ import org.apache.sysds.runtime.util.DataConverter;
  */
 public class EvalNaryCPInstruction extends BuiltinNaryCPInstruction {
 
+	private int _threadID = -1;
+	
 	public EvalNaryCPInstruction(Operator op, String opcode, String istr, CPOperand output, CPOperand... inputs) {
 		super(op, opcode, istr, output, inputs);
 	}
@@ -60,9 +69,12 @@ public class EvalNaryCPInstruction extends BuiltinNaryCPInstruction {
 	public void processInstruction(ExecutionContext ec) {
 		//1. get the namespace and func
 		String funcName = ec.getScalarInput(inputs[0]).getStringValue();
-		if( funcName.contains(Program.KEY_DELIM) )
-			throw new DMLRuntimeException("Eval calls to '"+funcName+"', i.e., a function outside "
-				+ "the default "+ "namespace, are not supported yet. Please call the function directly.");
+		String nsName = null; //default namespace
+		if( funcName.contains(Program.KEY_DELIM) ) {
+			String[] parts = DMLProgram.splitFunctionKey(funcName);
+			funcName = parts[1];
+			nsName = parts[0];
+		}
 		
 		// bound the inputs to avoiding being deleted after the function call
 		CPOperand[] boundInputs = Arrays.copyOfRange(inputs, 1, inputs.length);
@@ -77,17 +89,40 @@ public class EvalNaryCPInstruction extends BuiltinNaryCPInstruction {
 		DataType dt1 = boundInputs[0].getDataType().isList() ? 
 			DataType.MATRIX : boundInputs[0].getDataType();
 		String funcName2 = Builtins.getInternalFName(funcName, dt1);
-		if( !ec.getProgram().containsFunctionProgramBlock(null, funcName)) {
-			if( !ec.getProgram().containsFunctionProgramBlock(null,funcName2) )
-				compileFunctionProgramBlock(funcName, dt1, ec.getProgram());
+		if( !ec.getProgram().containsFunctionProgramBlock(nsName, funcName)) {
+			//error handling non-existing functions
+			if( !Builtins.contains(funcName, true, false) //builtins and their private functions
+				&& !ec.getProgram().containsFunctionProgramBlock(DMLProgram.BUILTIN_NAMESPACE, funcName2)) {
+				String msgNs = (nsName==null) ? DMLProgram.DEFAULT_NAMESPACE : nsName;
+				throw new DMLRuntimeException("Function '" 
+					+ DMLProgram.constructFunctionKey(msgNs, funcName)+"' (called through eval) is non-existing.");
+			}
+			//load and compile missing builtin function
+			nsName = DMLProgram.BUILTIN_NAMESPACE;
+			synchronized(ec.getProgram()) { //prevent concurrent recompile/prog modify
+				if( !ec.getProgram().containsFunctionProgramBlock(nsName, funcName2) )
+					compileFunctionProgramBlock(funcName, dt1, ec.getProgram());
+			}
 			funcName = funcName2;
 		}
 		
 		//obtain function block (but unoptimized version of existing functions for correctness)
-		FunctionProgramBlock fpb = ec.getProgram().getFunctionProgramBlock(null, funcName, false);
+		FunctionProgramBlock fpb = ec.getProgram().getFunctionProgramBlock(nsName, funcName, false);
+		
+		//copy function block in parfor context (avoid excessive thread contention on recompilation)
+		if( ProgramBlock.isThreadID(_threadID) && ParForProgramBlock.COPY_EVAL_FUNCTIONS ) {
+			String funcNameParfor = funcName + Lop.CP_CHILD_THREAD + _threadID;
+			if( !ec.getProgram().containsFunctionProgramBlock(nsName, funcNameParfor, false) ) { //copy on demand
+				fpb = ProgramConverter.createDeepCopyFunctionProgramBlock(fpb, new HashSet<>(), new HashSet<>(), _threadID);
+				ec.getProgram().addFunctionProgramBlock(nsName, funcNameParfor, fpb, false);
+			}
+			fpb = ec.getProgram().getFunctionProgramBlock(nsName, funcNameParfor, false);
+			funcName = funcNameParfor;
+		}
 		
 		//4. expand list arguments if needed
 		CPOperand[] boundInputs2 = null;
+		LineageItem[] lineageInputs = null;
 		if( boundInputs.length == 1 && boundInputs[0].getDataType().isList()
 			&& !(fpb.getInputParams().size() == 1 && fpb.getInputParams().get(0).getDataType().isList()))
 		{
@@ -103,13 +138,15 @@ public class EvalNaryCPInstruction extends BuiltinNaryCPInstruction {
 				boundInputs2[i] = new CPOperand(varName, in);
 			}
 			boundInputs = boundInputs2;
+			lineageInputs = DMLScript.LINEAGE 
+					? lo.getLineageItems().toArray(new LineageItem[lo.getLength()]) : null;
 		}
 		
-		//5. call the function
-		FunctionCallCPInstruction fcpi = new FunctionCallCPInstruction(null, funcName,
-			false, boundInputs, fpb.getInputParamNames(), boundOutputNames, "eval func");
+		//5. call the function (to unoptimized function)
+		FunctionCallCPInstruction fcpi = new FunctionCallCPInstruction(nsName, funcName,
+			false, boundInputs, lineageInputs, fpb.getInputParamNames(), boundOutputNames, "eval func");
 		fcpi.processInstruction(ec);
-
+		
 		//6. convert the result to matrix
 		Data newOutput = ec.getVariable(output);
 		if (!(newOutput instanceof MatrixObject)) {
@@ -121,6 +158,10 @@ public class EvalNaryCPInstruction extends BuiltinNaryCPInstruction {
 				//convert frame to matrix
 				mb = DataConverter.convertToMatrixBlock(((FrameObject) newOutput).acquireRead());
 				ec.cleanupCacheableData((FrameObject) newOutput);
+			}
+			else {
+				throw new DMLRuntimeException("Invalid eval return type: "+newOutput.getDataType().name()
+					+ " (valid: matrix/frame/scalar; where frames or scalars are converted to output matrices)");
 			}
 			outputMO.acquireModify(mb);
 			outputMO.release();
@@ -134,22 +175,34 @@ public class EvalNaryCPInstruction extends BuiltinNaryCPInstruction {
 		}
 	}
 	
+	@Override
+	public void updateInstructionThreadID(String pattern, String replace) {
+		//obtain thread (parfor worker) ID from replacement string
+		_threadID = Integer.parseInt(replace.substring(Lop.CP_CHILD_THREAD.length()));
+	}
+	
 	private static void compileFunctionProgramBlock(String name, DataType dt, Program prog) {
 		//load builtin file and parse function statement block
+		String nsName = DMLProgram.BUILTIN_NAMESPACE;
 		Map<String,FunctionStatementBlock> fsbs = DmlSyntacticValidator
-			.loadAndParseBuiltinFunction(name, DMLProgram.DEFAULT_NAMESPACE);
+			.loadAndParseBuiltinFunction(name, nsName);
 		if( fsbs.isEmpty() )
 			throw new DMLRuntimeException("Failed to compile function '"+name+"'.");
+		
+		DMLProgram dmlp = (prog.getDMLProg() != null) ? prog.getDMLProg() :
+			fsbs.get(Builtins.getInternalFName(name, dt)).getDMLProg();
+		
+		//filter already existing functions (e.g., already loaded internally-called functions)
+		fsbs = (dmlp.getBuiltinFunctionDictionary() == null) ? fsbs : fsbs.entrySet().stream()
+			.filter(e -> !dmlp.getBuiltinFunctionDictionary().containsFunction(e.getKey()))
+			.collect(Collectors.toMap(e -> e.getKey(), e -> e.getValue()));
 		
 		// prepare common data structures, including a consolidated dml program
 		// to facilitate function validation which tries to inline lazily loaded
 		// and existing functions.
-		DMLProgram dmlp = (prog.getDMLProg() != null) ? prog.getDMLProg() :
-			fsbs.get(Builtins.getInternalFName(name, dt)).getDMLProg();
 		for( Entry<String,FunctionStatementBlock> fsb : fsbs.entrySet() ) {
-			if( !dmlp.getDefaultFunctionDictionary().containsFunction(fsb.getKey()) ) {
-				dmlp.addFunctionStatementBlock(fsb.getKey(), fsb.getValue());
-			}
+			dmlp.createNamespace(nsName); // create namespace on demand
+			dmlp.addFunctionStatementBlock(nsName, fsb.getKey(), fsb.getValue());
 			fsb.getValue().setDMLProg(dmlp);
 		}
 		DMLTranslator dmlt = new DMLTranslator(dmlp);
@@ -180,12 +233,10 @@ public class EvalNaryCPInstruction extends BuiltinNaryCPInstruction {
 		
 		// compile runtime program
 		for( Entry<String,FunctionStatementBlock> fsb : fsbs.entrySet() ) {
-			if( !prog.containsFunctionProgramBlock(null, fsb.getKey(), false) ) {
-				FunctionProgramBlock fpb = (FunctionProgramBlock) dmlt
-					.createRuntimeProgramBlock(prog, fsb.getValue(), ConfigurationManager.getDMLConfig());
-				prog.addFunctionProgramBlock(null, fsb.getKey(), fpb, true); // optimized
-				prog.addFunctionProgramBlock(null, fsb.getKey(), fpb, false);    // unoptimized -> eval
-			}
+			FunctionProgramBlock fpb = (FunctionProgramBlock) dmlt
+				.createRuntimeProgramBlock(prog, fsb.getValue(), ConfigurationManager.getDMLConfig());
+			prog.addFunctionProgramBlock(nsName, fsb.getKey(), fpb, true);  // optimized
+			prog.addFunctionProgramBlock(nsName, fsb.getKey(), fpb, false); // unoptimized -> eval
 		}
 	}
 	
@@ -209,8 +260,12 @@ public class EvalNaryCPInstruction extends BuiltinNaryCPInstruction {
 	
 	private static ListObject reorderNamedListForFunctionCall(ListObject in, List<String> fArgNames) {
 		List<Data> sortedData = new ArrayList<>();
-		for( String name : fArgNames )
+		List<LineageItem> sortedLI = DMLScript.LINEAGE ? new ArrayList<>() : null;
+		for( String name : fArgNames ) {
 			sortedData.add(in.getData(name));
-		return new ListObject(sortedData, new ArrayList<>(fArgNames));
+			if (DMLScript.LINEAGE)
+				sortedLI.add(in.getLineageItem(name));
+		}
+		return new ListObject(sortedData, new ArrayList<>(fArgNames), sortedLI);
 	}
 }

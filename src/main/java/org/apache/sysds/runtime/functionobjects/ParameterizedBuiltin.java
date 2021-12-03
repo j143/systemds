@@ -40,11 +40,11 @@ import org.apache.sysds.runtime.util.UtilFunctions;
 public class ParameterizedBuiltin extends ValueFunction
 {	
 
-	private static final long serialVersionUID = -5966242955816522697L;
+	private static final long serialVersionUID = -7987603644903675052L;
 	
 	public enum ParameterizedBuiltinCode { 
-		CDF, INVCDF, RMEMPTY, REPLACE, REXPAND, LOWER_TRI, UPPER_TRI,
-		TRANSFORMAPPLY, TRANSFORMDECODE, PARAMSERV }
+		AUTODIFF, CDF, INVCDF, RMEMPTY, REPLACE, REXPAND, LOWER_TRI, UPPER_TRI,
+		TOKENIZE, TRANSFORMAPPLY, TRANSFORMDECODE, PARAMSERV }
 	public enum ProbabilityDistributionCode { 
 		INVALID, NORMAL, EXP, CHISQ, F, T }
 	
@@ -61,6 +61,7 @@ public class ParameterizedBuiltin extends ValueFunction
 		String2ParameterizedBuiltinCode.put( "lowertri", ParameterizedBuiltinCode.LOWER_TRI);
 		String2ParameterizedBuiltinCode.put( "uppertri", ParameterizedBuiltinCode.UPPER_TRI);
 		String2ParameterizedBuiltinCode.put( "rexpand", ParameterizedBuiltinCode.REXPAND);
+		String2ParameterizedBuiltinCode.put( "tokenize", ParameterizedBuiltinCode.TOKENIZE);
 		String2ParameterizedBuiltinCode.put( "transformapply", ParameterizedBuiltinCode.TRANSFORMAPPLY);
 		String2ParameterizedBuiltinCode.put( "transformdecode", ParameterizedBuiltinCode.TRANSFORMDECODE);
 		String2ParameterizedBuiltinCode.put( "paramserv", ParameterizedBuiltinCode.PARAMSERV);
@@ -172,6 +173,9 @@ public class ParameterizedBuiltin extends ValueFunction
 			
 			case REXPAND:
 				return new ParameterizedBuiltin(ParameterizedBuiltinCode.REXPAND);
+
+			case TOKENIZE:
+				return new ParameterizedBuiltin(ParameterizedBuiltinCode.TOKENIZE);
 			
 			case TRANSFORMAPPLY:
 				return new ParameterizedBuiltin(ParameterizedBuiltinCode.TRANSFORMAPPLY);
@@ -181,6 +185,9 @@ public class ParameterizedBuiltin extends ValueFunction
 
 			case PARAMSERV:
 				return new ParameterizedBuiltin(ParameterizedBuiltinCode.PARAMSERV);
+
+			case AUTODIFF:
+				return new ParameterizedBuiltin(ParameterizedBuiltinCode.AUTODIFF);
 				
 			default:
 				throw new DMLRuntimeException("Invalid parameterized builtin code: " + code);

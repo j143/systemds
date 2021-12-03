@@ -20,20 +20,29 @@
 package org.apache.sysds.test.component.compress.colgroup;
 
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.util.EnumSet;
 
-import org.apache.sysds.runtime.compress.BitmapEncoder;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.compress.CompressionSettings;
 import org.apache.sysds.runtime.compress.CompressionSettingsBuilder;
-import org.apache.sysds.runtime.compress.colgroup.ColGroup;
-import org.apache.sysds.runtime.compress.colgroup.ColGroup.CompressionType;
+import org.apache.sysds.runtime.compress.bitmap.ABitmap;
+import org.apache.sysds.runtime.compress.bitmap.BitmapEncoder;
+import org.apache.sysds.runtime.compress.colgroup.AColGroup;
+import org.apache.sysds.runtime.compress.colgroup.AColGroup.CompressionType;
 import org.apache.sysds.runtime.compress.colgroup.ColGroupFactory;
 import org.apache.sysds.runtime.compress.estim.CompressedSizeEstimator;
+import org.apache.sysds.runtime.compress.estim.CompressedSizeEstimatorExact;
 import org.apache.sysds.runtime.compress.estim.CompressedSizeEstimatorFactory;
+import org.apache.sysds.runtime.compress.estim.CompressedSizeEstimatorSample;
+import org.apache.sysds.runtime.compress.estim.CompressedSizeInfo;
 import org.apache.sysds.runtime.compress.estim.CompressedSizeInfoColGroup;
-import org.apache.sysds.runtime.compress.utils.ABitmap;
+import org.apache.sysds.runtime.compress.estim.EstimationFactors;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -41,116 +50,146 @@ import org.junit.runners.Parameterized;
 @RunWith(value = Parameterized.class)
 public abstract class JolEstimateTest {
 
+	protected static final Log LOG = LogFactory.getLog(JolEstimateTest.class.getName());
+
 	protected static final CompressionType ddc = CompressionType.DDC;
 	protected static final CompressionType ole = CompressionType.OLE;
 	protected static final CompressionType rle = CompressionType.RLE;
+	protected static final CompressionType sdc = CompressionType.SDC;
 	protected static final CompressionType unc = CompressionType.UNCOMPRESSED;
-
-	public static long kbTolerance = 1024;
-
 	private static final int seed = 7;
-	private final long tolerance;
+
+	private static final CompressionSettingsBuilder csb = new CompressionSettingsBuilder().setMinimumSampleSize(100)
+		.setSeed(seed);
+
+	private final int[] colIndexes;
 	private final MatrixBlock mbt;
-	private final CompressionSettings cs;
-	private final CompressionSettings csl;// Compression Settings Lossy;
-	private ColGroup cg;
-	private ColGroup cgl; // ColGroup Lossy;
 
 	public abstract CompressionType getCT();
 
-	public JolEstimateTest(MatrixBlock mb, int tolerance) {
-		this.mbt = mb;
-		this.tolerance = tolerance;
-		EnumSet<CompressionType> vc = EnumSet.of(getCT());
-		CompressionSettingsBuilder csb = new CompressionSettingsBuilder().setSeed(seed).setSamplingRatio(1.0)
-			.setValidCompressions(vc);
-		this.cs = csb.create();
-		this.csl = csb.setLossy(true).setSortValuesByLength(false).create();
+	private final long actualSize;
+	private final int actualNumberUnique;
+	private final AColGroup cg;
 
-		int[] colIndexes = new int[mbt.getNumRows()];
-		for(int x = 0; x < mbt.getNumRows(); x++) {
+	public JolEstimateTest(MatrixBlock mbt) {
+		this.mbt = mbt;
+		colIndexes = new int[mbt.getNumRows()];
+		for(int x = 0; x < mbt.getNumRows(); x++)
 			colIndexes[x] = x;
-		}
-		try {
-			ABitmap ubm = BitmapEncoder.extractBitmap(colIndexes, mbt, cs);
-			cg = ColGroupFactory.compress(colIndexes, mbt.getNumColumns(), ubm, getCT(), cs, mbt);
-			ABitmap ubml = BitmapEncoder.extractBitmap(colIndexes, mbt, csl);
-			cgl = ColGroupFactory.compress(colIndexes, mbt.getNumColumns(), ubml, getCT(), csl, mbt);
 
+		try {
+			CompressionSettings cs = new CompressionSettingsBuilder().setSamplingRatio(1.0)
+				.setValidCompressions(EnumSet.of(getCT())).create();
+			cs.transposed = true;
+			ABitmap ubm = BitmapEncoder.extractBitmap(colIndexes, mbt, true, 8, false);
+
+			EstimationFactors ef = CompressedSizeEstimator.estimateCompressedColGroupSize(ubm, colIndexes,
+				mbt.getNumColumns(), cs);
+			CompressedSizeInfoColGroup cgi = new CompressedSizeInfoColGroup(colIndexes, ef, getCT());
+			CompressedSizeInfo csi = new CompressedSizeInfo(cgi);
+			cg = ColGroupFactory.compressColGroups(mbt, csi, cs, 1).get(0);
+			// cg = ColGroupFactory.compress(colIndexes, mbt.getNumColumns(), ubm, getCT(), cs, mbt, 1);
+			actualSize = cg.estimateInMemorySize();
+			actualNumberUnique = cg.getNumValues();
 		}
 		catch(Exception e) {
 			e.printStackTrace();
-			assertTrue("Failed to compress colGroup! " + e.getMessage(), false);
+			throw new DMLRuntimeException("Failed construction : " + this.getClass().getSimpleName());
 		}
 	}
 
 	@Test
 	public void compressedSizeInfoEstimatorExact() {
-		try {
-			// CompressionSettings cs = new CompressionSettings(1.0);
-			CompressedSizeEstimator cse = CompressedSizeEstimatorFactory.getSizeEstimator(mbt, cs);
-			CompressedSizeInfoColGroup csi = cse.estimateCompressedColGroupSize();
-			long estimateCSI = csi.getCompressionSize(getCT());
-			long estimateObject = cg.estimateInMemorySize();
-			String errorMessage = "CSI estimate " + estimateCSI + " should be exactly " + estimateObject + "\n"
-				+ cg.toString();
-			boolean res = Math.abs(estimateCSI - estimateObject) <= tolerance;
-			if(res && !(estimateCSI == estimateObject)) {
-				// Make a warning in case that it is not exactly the same.
-				// even if the test allows some tolerance.
-				System.out.println("NOT EXACTLY THE SAME! " + this.getClass().getName() + " " + errorMessage);
-			}
-			assertTrue(errorMessage, res);
-		}
-		catch(Exception e) {
-			e.printStackTrace();
-			assertTrue("Failed Test", false);
-		}
+		compressedSizeInfoEstimatorSample(1.0, 1.0);
 	}
 
 	@Test
-	public void compressedSizeInfoEstimatorExactLossy() {
+	@Ignore
+	public void compressedSizeInfoEstimatorSample_90() {
+		compressedSizeInfoEstimatorSample(0.9, 0.9);
+	}
+
+	@Test
+	@Ignore
+	public void compressedSizeInfoEstimatorSample_50() {
+		compressedSizeInfoEstimatorSample(0.5, 0.8);
+	}
+
+	@Test
+	@Ignore
+	public void compressedSizeInfoEstimatorSample_20() {
+		compressedSizeInfoEstimatorSample(0.2, 0.7);
+	}
+
+	@Test
+	public void compressedSizeInfoEstimatorSample_10() {
+		compressedSizeInfoEstimatorSample(0.1, 0.6);
+	}
+
+	@Test
+	@Ignore
+	public void compressedSizeInfoEstimatorSample_5() {
+		compressedSizeInfoEstimatorSample(0.05, 0.5);
+	}
+
+	@Test
+	@Ignore
+	public void compressedSizeInfoEstimatorSample_1() {
+		compressedSizeInfoEstimatorSample(0.01, 0.4);
+	}
+
+	@Test 
+	public void testToString(){
+		// just to add a tests to verify that the to String method does not crash
+		cg.toString();
+	}
+
+	public void compressedSizeInfoEstimatorSample(double ratio, double tolerance) {
 		try {
-			// CompressionSettings cs = new CompressionSettings(1.0);
-			CompressedSizeEstimator cse = CompressedSizeEstimatorFactory.getSizeEstimator(mbt, csl);
-			CompressedSizeInfoColGroup csi = cse.estimateCompressedColGroupSize();
-			long estimateCSI = csi.getCompressionSize(getCT());
-			long estimateObject = cgl.estimateInMemorySize();
-			String errorMessage = "CSI estimate " + estimateCSI + " should be exactly " + estimateObject + "\n"
-				+ cg.toString();
-			boolean res = Math.abs(estimateCSI - estimateObject) <= tolerance;
-			if(res && !(estimateCSI == estimateObject)) {
-				// Make a warning in case that it is not exactly the same.
-				// even if the test allows some tolerance.
-				System.out.println("NOT EXACTLY THE SAME! " + this.getClass().getName() + " " + errorMessage);
+
+			CompressionSettings cs = csb.setSamplingRatio(ratio).setValidCompressions(EnumSet.of(getCT())).create();
+			cs.transposed = true;
+
+			CompressedSizeEstimator est = CompressedSizeEstimatorFactory.getSizeEstimator(mbt, cs, 1);
+			final int sampleSize = (est instanceof CompressedSizeEstimatorSample) ? ((CompressedSizeEstimatorSample) est)
+				.getSampleSize() : est.getNumRows();
+
+			if(est instanceof CompressedSizeEstimatorExact)
+				return;
+			final CompressedSizeInfoColGroup cgsi = est.estimateCompressedColGroupSize();
+
+			if(cg.getCompType() != CompressionType.UNCOMPRESSED && actualNumberUnique > 10) {
+
+				final int estimateNUniques = cgsi.getNumVals();
+				final double minToleranceNUniques = actualNumberUnique * tolerance;
+				final double maxToleranceNUniques = actualNumberUnique / tolerance;
+				final boolean withinToleranceOnNUniques = minToleranceNUniques <= estimateNUniques &&
+					estimateNUniques <= maxToleranceNUniques;
+
+				if(!withinToleranceOnNUniques) {
+					final String uniqueString = String.format("%.0f <= %d <= %.0f, Actual %d", minToleranceNUniques,
+						estimateNUniques, maxToleranceNUniques, actualNumberUnique);
+					fail("CSI Sampled estimate of number of unique values not in range\n" + uniqueString);
+				}
 			}
-			assertTrue(errorMessage, res);
+
+			final long estimateCSI = cgsi.getCompressionSize(cg.getCompType());
+			final double minTolerance = actualSize * tolerance;
+			final double maxTolerance = actualSize / tolerance;
+			final boolean withinToleranceOnSize = minTolerance <= estimateCSI && estimateCSI <= maxTolerance;
+			if(!withinToleranceOnSize) {
+				final String rangeString = String.format("%.0f <= %d <= %.0f , Actual Size %d", minTolerance, estimateCSI,
+					maxTolerance, actualSize);
+
+				fail("CSI Sampled estimate size is not in tolerance range \n" + rangeString + "\nActual number uniques:"
+					+ actualNumberUnique + "\nSampleSize of total rows:: " + sampleSize + " " + mbt.getNumColumns() + "\n"
+					+ cg);
+			}
+
 		}
 		catch(Exception e) {
 			e.printStackTrace();
-			assertTrue("Failed Test", false);
+			assertTrue("Failed sample test " + getCT() + "", false);
 		}
 	}
-
-	// @Test
-	// public void compressedSizeInfoEstimatorSampler() {
-	// try {
-	// CompressionSettings cs = new CompressionSettingsBuilder().copySettings(this.cs).setSamplingRatio(0.1).create();
-	// CompressedSizeEstimator cse = CompressedSizeEstimatorFactory.getSizeEstimator(mbt, cs);
-	// CompressedSizeInfoColGroup csi = cse.computeCompressedSizeInfos(1).compressionInfo[0];
-	// long estimateCSI = csi.getCompressionSize(getCT());
-	// long estimateObject = cg.estimateInMemorySize();
-	// String errorMessage = "CSI Sampled estimate " + estimateCSI + " should be larger than actual "
-	// + estimateObject + " but not more than " + (tolerance + kbTolerance) + " off";
-	// if(!(estimateCSI == estimateObject)) {
-	// System.out.println("NOT EXACTLY THE SAME IN SAMPLING! " + errorMessage);
-	// }
-	// boolean res = Math.abs(estimateCSI - estimateObject) <= tolerance + kbTolerance;
-	// assertTrue(errorMessage, res);
-	// }
-	// catch(Exception e) {
-	// e.printStackTrace();
-	// assertTrue("Failed Test", false);
-	// }
-	// }
 }

@@ -42,6 +42,8 @@ public class FederatedRowAggregateTest extends AutomatedTestBase {
 	private final static String TEST_NAME7 = "FederatedRowMaxTest";
 	private final static String TEST_NAME8 = "FederatedRowMinTest";
 	private final static String TEST_NAME9 = "FederatedRowVarTest";
+	private final static String TEST_NAME10 = "FederatedRowProdTest";
+	private final static String TEST_NAME11 = "FederatedMMTest";
 
 	private final static String TEST_DIR = "functions/federated/aggregate/";
 	private static final String TEST_CLASS_DIR = TEST_DIR + FederatedRowAggregateTest.class.getSimpleName() + "/";
@@ -64,7 +66,7 @@ public class FederatedRowAggregateTest extends AutomatedTestBase {
 	}
 
 	private enum OpType {
-		SUM, MEAN, MAX, MIN, VAR
+		SUM, MEAN, MAX, MIN, VAR, PROD, MM
 	}
 
 	@Override
@@ -75,6 +77,8 @@ public class FederatedRowAggregateTest extends AutomatedTestBase {
 		addTestConfiguration(TEST_NAME7, new TestConfiguration(TEST_CLASS_DIR, TEST_NAME7, new String[] {"S"}));
 		addTestConfiguration(TEST_NAME8, new TestConfiguration(TEST_CLASS_DIR, TEST_NAME8, new String[] {"S"}));
 		addTestConfiguration(TEST_NAME9, new TestConfiguration(TEST_CLASS_DIR, TEST_NAME9, new String[] {"S"}));
+		addTestConfiguration(TEST_NAME10, new TestConfiguration(TEST_CLASS_DIR, TEST_NAME10, new String[] {"S"}));
+		addTestConfiguration(TEST_NAME11, new TestConfiguration(TEST_CLASS_DIR, TEST_NAME11, new String[] {"S"}));
 	}
 
 	@Test
@@ -102,6 +106,51 @@ public class FederatedRowAggregateTest extends AutomatedTestBase {
 		runAggregateOperationTest(OpType.VAR, ExecMode.SINGLE_NODE);
 	}
 
+	@Test
+	public void testRowProdDenseMatrixCP() {
+		runAggregateOperationTest(OpType.PROD, ExecMode.SINGLE_NODE);
+	}
+
+	@Test
+	public void testMMDenseMatrixCP() {
+		runAggregateOperationTest(OpType.MM, ExecMode.SINGLE_NODE);
+	}
+
+	@Test
+	public void testRowSumDenseMatrixSP() {
+		runAggregateOperationTest(OpType.SUM, ExecMode.SPARK);
+	}
+
+	@Test
+	public void testRowMeanDenseMatrixSP() {
+		runAggregateOperationTest(OpType.MEAN, ExecMode.SPARK);
+	}
+
+	@Test
+	public void testRowMaxDenseMatrixSP() {
+		runAggregateOperationTest(OpType.MAX, ExecMode.SPARK);
+	}
+
+	@Test
+	public void testRowMinDenseMatrixSP() {
+		runAggregateOperationTest(OpType.MIN, ExecMode.SPARK);
+	}
+
+	@Test
+	public void testRowVarDenseMatrixSP() {
+		runAggregateOperationTest(OpType.VAR, ExecMode.SPARK);
+	}
+
+	@Test
+	public void testRowProdDenseMatrixSP() {
+		runAggregateOperationTest(OpType.PROD, ExecMode.SPARK);
+	}
+
+	@Test
+	public void testMMDenseMatrixSP() {
+		runAggregateOperationTest(OpType.MM, ExecMode.SPARK);
+	}
+
 	private void runAggregateOperationTest(OpType type, ExecMode execMode) {
 		boolean sparkConfigOld = DMLScript.USE_LOCAL_SPARK_CONFIG;
 		ExecMode platformOld = rtplatform;
@@ -126,6 +175,12 @@ public class FederatedRowAggregateTest extends AutomatedTestBase {
 			case VAR:
 				TEST_NAME = TEST_NAME9;
 				break;
+			case PROD:
+				TEST_NAME = TEST_NAME10;
+				break;
+			case MM:
+				TEST_NAME = TEST_NAME11;
+				break;
 		}
 
 		getAndLoadTestConfiguration(TEST_NAME);
@@ -139,10 +194,10 @@ public class FederatedRowAggregateTest extends AutomatedTestBase {
 			c = cols;
 		}
 
-		double[][] X1 = getRandomMatrix(r, c, 1, 3, 1, 3);
-		double[][] X2 = getRandomMatrix(r, c, 1, 3, 1, 7);
-		double[][] X3 = getRandomMatrix(r, c, 1, 3, 1, 8);
-		double[][] X4 = getRandomMatrix(r, c, 1, 3, 1, 9);
+		double[][] X1 = getRandomMatrix(r, c, 3, 3, 1, 3);
+		double[][] X2 = getRandomMatrix(r, c, 3, 3, 1, 7);
+		double[][] X3 = getRandomMatrix(r, c, 3, 3, 1, 8);
+		double[][] X4 = getRandomMatrix(r, c, 3, 3, 1, 9);
 
 		MatrixCharacteristics mc = new MatrixCharacteristics(r, c, blocksize, r * c);
 		writeInputMatrixWithMTD("X1", X1, false, mc);
@@ -188,7 +243,7 @@ public class FederatedRowAggregateTest extends AutomatedTestBase {
 		runTest(true, false, null, -1);
 
 		// compare via files
-		compareResults(type == FederatedRowAggregateTest.OpType.VAR ? 1e-2 : 1e-9);
+		compareResults(type == FederatedRowAggregateTest.OpType.VAR ? 1e-2 : 1e-9, "Stat-DML1", "Stat-DML2");
 
 		String fedInst = "fed_uar";
 
@@ -207,6 +262,12 @@ public class FederatedRowAggregateTest extends AutomatedTestBase {
 				break;
 			case VAR:
 				Assert.assertTrue(heavyHittersContainsString(fedInst.concat("var")));
+				break;
+			case PROD:
+				Assert.assertTrue(heavyHittersContainsString(fedInst.concat("*")));
+				break;
+			case MM:
+				Assert.assertTrue(heavyHittersContainsString(rtplatform == ExecMode.SPARK ? "fed_mapmm" : "fed_ba+*"));
 				break;
 		}
 

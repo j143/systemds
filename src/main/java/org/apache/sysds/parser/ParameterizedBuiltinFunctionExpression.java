@@ -48,12 +48,14 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 	public static final String TF_FN_PARAM_DATA = "target";
 	public static final String TF_FN_PARAM_MTD2 = "meta";
 	public static final String TF_FN_PARAM_SPEC = "spec";
+	public static final String LINEAGE_TRACE = "lineage";
 	public static final String TF_FN_PARAM_MTD = "transformPath"; //NOTE MB: for backwards compatibility
 	
 	public static HashMap<Builtins, ParamBuiltinOp> pbHopMap;
 	static {
 		pbHopMap = new HashMap<>();
 		
+		pbHopMap.put(Builtins.AUTODIFF, ParamBuiltinOp.AUTODIFF);
 		pbHopMap.put(Builtins.GROUPEDAGG, ParamBuiltinOp.GROUPEDAGG);
 		pbHopMap.put(Builtins.RMEMPTY, ParamBuiltinOp.RMEMPTY);
 		pbHopMap.put(Builtins.REPLACE, ParamBuiltinOp.REPLACE);
@@ -100,7 +102,7 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 			new ParameterizedBuiltinFunctionExpression(ctx, pbifop,varParams, fileName);
 		return retVal;
 	}
-	
+
 			
 	public ParameterizedBuiltinFunctionExpression(ParserRuleContext ctx, Builtins op, LinkedHashMap<String,Expression> varParams,
 			String filename) {
@@ -202,6 +204,10 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 		case ORDER:
 			validateOrder(output, conditional);
 			break;
+
+		case TOKENIZE:
+			validateTokenize(output, conditional);
+			break;
 		
 		case TRANSFORMAPPLY:
 			validateTransformApply(output, conditional);
@@ -227,7 +233,10 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 		case TOSTRING:
 			validateCastAsString(output, conditional);
 			break;
-		
+
+		case AUTODIFF:
+			validateAutoDiff(output, conditional);
+			break;
 		case LISTNV:
 			validateNamedList(output, conditional);
 			break;
@@ -245,6 +254,22 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 				raiseValidateError("Unsupported parameterized function "+ getOpCode(), 
 						false, LanguageErrorCodes.UNSUPPORTED_EXPRESSION);
 		}
+	}
+
+	private void validateAutoDiff(DataIdentifier output, boolean conditional) {
+		//validate data / metadata (recode maps)
+		checkDataType("lineage", LINEAGE_TRACE, DataType.LIST, conditional);
+
+		//validate specification
+		checkDataValueType(false, "lineage", LINEAGE_TRACE, DataType.LIST, ValueType.UNKNOWN, conditional);
+		HashMap<String, Expression> varParams = getVarParams();
+		// set output characteristics
+		output.setDataType(DataType.LIST);
+		output.setValueType(ValueType.UNKNOWN);
+		// TODO dimension should be set to -1 but could not set due to lineage parsing error in Spark contetx
+		output.setDimensions(varParams.size(), 1);
+		// output.setDimensions(-1, 1);
+		output.setBlocksize(-1);
 	}
 
 	@Override
@@ -286,7 +311,11 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 			raiseValidateError("Should provide more arguments for function " + fname, false, LanguageErrorCodes.INVALID_PARAMETERS);
 		}
 		//check for invalid parameters
-		Set<String> valid = CollectionUtils.asSet(Statement.PS_MODEL, Statement.PS_FEATURES, Statement.PS_LABELS, Statement.PS_VAL_FEATURES, Statement.PS_VAL_LABELS, Statement.PS_UPDATE_FUN, Statement.PS_AGGREGATION_FUN, Statement.PS_MODE, Statement.PS_UPDATE_TYPE, Statement.PS_FREQUENCY, Statement.PS_EPOCHS, Statement.PS_BATCH_SIZE, Statement.PS_PARALLELISM, Statement.PS_SCHEME, Statement.PS_HYPER_PARAMS, Statement.PS_CHECKPOINTING);
+		Set<String> valid = CollectionUtils.asSet(Statement.PS_MODEL, Statement.PS_FEATURES, Statement.PS_LABELS,
+			Statement.PS_VAL_FEATURES, Statement.PS_VAL_LABELS, Statement.PS_UPDATE_FUN, Statement.PS_AGGREGATION_FUN,
+			Statement.PS_VAL_FUN, Statement.PS_MODE, Statement.PS_UPDATE_TYPE, Statement.PS_FREQUENCY, Statement.PS_EPOCHS,
+			Statement.PS_BATCH_SIZE, Statement.PS_PARALLELISM, Statement.PS_SCHEME, Statement.PS_FED_RUNTIME_BALANCING,
+			Statement.PS_FED_WEIGHTING, Statement.PS_HYPER_PARAMS, Statement.PS_CHECKPOINTING, Statement.PS_SEED, Statement.PS_NBATCHES, Statement.PS_MODELAVG);
 		checkInvalidParameters(getOpCode(), getVarParams(), valid);
 
 		// check existence and correctness of parameters
@@ -297,6 +326,7 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 		checkDataValueType(true, fname, Statement.PS_VAL_LABELS, DataType.MATRIX, ValueType.FP64, conditional);
 		checkDataValueType(false, fname, Statement.PS_UPDATE_FUN, DataType.SCALAR, ValueType.STRING, conditional);
 		checkDataValueType(false, fname, Statement.PS_AGGREGATION_FUN, DataType.SCALAR, ValueType.STRING, conditional);
+		checkDataValueType(true, fname, Statement.PS_VAL_FUN, DataType.SCALAR, ValueType.STRING, conditional);
 		checkStringParam(true, fname, Statement.PS_MODE, conditional);
 		checkStringParam(true, fname, Statement.PS_UPDATE_TYPE, conditional);
 		checkStringParam(true, fname, Statement.PS_FREQUENCY, conditional);
@@ -304,8 +334,11 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 		checkDataValueType(true, fname, Statement.PS_BATCH_SIZE, DataType.SCALAR, ValueType.INT64, conditional);
 		checkDataValueType(true, fname, Statement.PS_PARALLELISM, DataType.SCALAR, ValueType.INT64, conditional);
 		checkStringParam(true, fname, Statement.PS_SCHEME, conditional);
+		checkStringParam(true, fname, Statement.PS_FED_RUNTIME_BALANCING, conditional);
+		checkStringParam(true, fname, Statement.PS_FED_WEIGHTING, conditional);
 		checkDataValueType(true, fname, Statement.PS_HYPER_PARAMS, DataType.LIST, ValueType.UNKNOWN, conditional);
 		checkStringParam(true, fname, Statement.PS_CHECKPOINTING, conditional);
+		checkDataValueType(true, fname, Statement.PS_SEED, DataType.SCALAR, ValueType.INT64, conditional);
 
 		// set output characteristics
 		output.setDataType(DataType.LIST);
@@ -327,6 +360,21 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 					String.format("Function %s should provide a string value for %s parameter.", fname, pname),
 					conditional);
 		}
+	}
+
+	private void validateTokenize(DataIdentifier output, boolean conditional)
+	{
+		//validate data / metadata (recode maps)
+		checkDataType("tokenize", TF_FN_PARAM_DATA, DataType.FRAME, conditional);
+
+		//validate specification
+		checkDataValueType(false, "tokenize", TF_FN_PARAM_SPEC, DataType.SCALAR, ValueType.STRING, conditional);
+		validateTransformSpec(TF_FN_PARAM_SPEC, conditional);
+
+		//set output dimensions
+		output.setDataType(DataType.FRAME);
+		output.setValueType(ValueType.STRING);
+		output.setDimensions(-1, -1);
 	}
 
 	// example: A = transformapply(target=X, meta=M, spec=s)
@@ -411,7 +459,6 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 		output2.setDimensions(-1, -1);
 	}
 	
-	@SuppressWarnings("unused")
 	private void validateTransformSpec(String pname, boolean conditional) {
 		Expression data = getVarParam(pname);
 		if( data instanceof StringIdentifier ) {
@@ -451,7 +498,9 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 	private void validateReplace(DataIdentifier output, boolean conditional) {
 		//check existence and correctness of arguments
 		Expression target = getVarParam("target");
-		checkTargetParam(target, conditional);
+		if( target.getOutput().getDataType() != DataType.FRAME ){
+			checkTargetParam(target, conditional);
+		}
 		
 		Expression pattern = getVarParam("pattern");
 		if( pattern==null ) {
@@ -470,8 +519,11 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 		}	
 		
 		// Output is a matrix with same dims as input
-		output.setDataType(DataType.MATRIX);
-		output.setValueType(ValueType.FP64);
+		output.setDataType(target.getOutput().getDataType());
+		if(target.getOutput().getDataType() == DataType.FRAME)
+			output.setValueType(ValueType.STRING);
+		else
+			output.setValueType(ValueType.FP64);
 		output.setDimensions(target.getOutput().getDim1(), target.getOutput().getDim2());
 	}
 
@@ -532,7 +584,8 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 				+ Arrays.toString(invalid.toArray(new String[0])), false);
 		
 		//check existence and correctness of arguments
-		checkTargetParam(getVarParam("target"), conditional);
+		Expression target = getVarParam("target");
+		checkEmptyTargetParam(target, conditional);
 		
 		Expression margin = getVarParam("margin");
 		if( margin==null ){
@@ -556,8 +609,11 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 			_varParams.put("empty.return", new BooleanIdentifier(true));
 		
 		// Output is a matrix with unknown dims
-		output.setDataType(DataType.MATRIX);
-		output.setValueType(ValueType.FP64);
+		output.setDataType(target.getOutput().getDataType());
+		if(target.getOutput().getDataType() == DataType.FRAME)
+			output.setValueType(ValueType.STRING);
+		else
+			output.setValueType(ValueType.FP64);
 		output.setDimensions(-1, -1);
 	}
 	
@@ -673,6 +729,12 @@ public class ParameterizedBuiltinFunctionExpression extends DataIdentifier
 		else if( target.getOutput().getDataType() != DataType.MATRIX )
 			raiseValidateError("Input matrix 'target' is of type '"+target.getOutput().getDataType()
 				+"'. Please specify the input matrix.", conditional, LanguageErrorCodes.INVALID_PARAMETERS);
+	}
+
+	private void checkEmptyTargetParam(Expression target, boolean conditional) {
+		if( target==null )
+			raiseValidateError("Named parameter 'target' missing. Please specify the input matrix.",
+				conditional, LanguageErrorCodes.INVALID_PARAMETERS);
 	}
 	
 	private void checkOptionalBooleanParam(Expression param, String name, boolean conditional) {

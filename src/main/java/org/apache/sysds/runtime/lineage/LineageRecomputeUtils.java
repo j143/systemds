@@ -31,6 +31,7 @@ import java.util.stream.Collectors;
 import org.apache.commons.lang3.mutable.MutableInt;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.DataType;
+import org.apache.sysds.common.Types.FileFormat;
 import org.apache.sysds.common.Types.OpOp1;
 import org.apache.sysds.common.Types.OpOp2;
 import org.apache.sysds.common.Types.OpOp3;
@@ -58,6 +59,7 @@ import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.BasicProgramBlock;
 import org.apache.sysds.runtime.controlprogram.FunctionProgramBlock;
 import org.apache.sysds.runtime.controlprogram.Program;
+import org.apache.sysds.runtime.controlprogram.caching.CacheableData;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysds.runtime.controlprogram.context.ExecutionContextFactory;
 import org.apache.sysds.runtime.instructions.Instruction;
@@ -71,6 +73,7 @@ import org.apache.sysds.runtime.instructions.cp.ScalarObjectFactory;
 import org.apache.sysds.runtime.instructions.cp.VariableCPInstruction;
 import org.apache.sysds.runtime.instructions.spark.RandSPInstruction;
 import org.apache.sysds.runtime.instructions.spark.SPInstruction.SPType;
+import org.apache.sysds.runtime.util.ProgramConverter;
 import org.apache.sysds.utils.Explain;
 import org.apache.sysds.utils.Explain.ExplainCounts;
 import org.apache.sysds.utils.Statistics;
@@ -82,10 +85,28 @@ public class LineageRecomputeUtils {
 	public static Map<String, DedupLoopItem> loopPatchMap = new HashMap<>();
 
 	public static Data parseNComputeLineageTrace(String mainTrace, String dedupPatches) {
+		if (DEBUG) {
+			System.out.println(mainTrace);
+			System.out.println(dedupPatches);
+		}
 		LineageItem root = LineageParser.parseLineageTrace(mainTrace);
 		if (dedupPatches != null)
 			LineageParser.parseLineageTraceDedup(dedupPatches);
+
+		// Disable GPU execution. TODO: Support GPU
+		boolean GPUenabled = false;
+		if (DMLScript.USE_ACCELERATOR) {
+			GPUenabled = true;
+			DMLScript.USE_ACCELERATOR = false;
+		}
+		// Reset statistics
+		if (DMLScript.STATISTICS)
+			Statistics.reset();
+
 		Data ret = computeByLineage(root);
+
+		if (GPUenabled)
+			DMLScript.USE_ACCELERATOR = true;
 		// Cleanup the statics
 		loopPatchMap.clear();
 		return ret;
@@ -111,9 +132,9 @@ public class LineageRecomputeUtils {
 		partDagRoots.put(varname, out);
 		constructBasicBlock(partDagRoots, varname, prog);
 		
-		// Reset cache due to cleaned data objects
+		// Reset cache to avoid erroneous reuse
 		LineageCache.resetCache();
-		//execute instructions and get result
+		// Execute instructions and get result
 		if (DEBUG) {
 			DMLScript.STATISTICS = true;
 			ExplainCounts counts = Explain.countDistributedOperations(prog);
@@ -121,10 +142,11 @@ public class LineageRecomputeUtils {
 		}
 		ec.setProgram(prog);
 		prog.execute(ec);
-		if (DEBUG) {
+		if (DEBUG || DMLScript.STATISTICS) {
 			Statistics.stopRunTimer();
 			System.out.println(Statistics.display(DMLScript.STATISTICS_COUNT));
 		}
+
 		return ec.getVariable(varname);
 	}
 	
@@ -181,6 +203,20 @@ public class LineageRecomputeUtils {
 					operands.put(item.getId(), input); // order preserving
 					break;
 				}
+				else if( item.getOpcode().equals("cache_rblk") ) {
+					CacheableData<?> dat = (CacheableData<?>)ProgramConverter.parseDataObject(item.getData())[1];
+					DataOp hop = new DataOp("tmp", dat.getDataType(), dat.getValueType(),
+						OpOpData.PERSISTENTREAD, dat.getFileName(), dat.getNumRows(),
+						dat.getNumColumns(), dat.getDataCharacteristics().getNonZeros(), -1);
+					hop.setFileFormat(FileFormat.BINARY);
+					hop.setInputBlocksize(dat.getBlocksize());
+					hop.setBlocksize(ConfigurationManager.getBlocksize());
+					hop.setRequiresReblock(true);
+					operands.put(item.getId(), hop);
+					break;
+				}
+				
+				
 				Instruction inst = InstructionParser.parseSingleInstruction(item.getData());
 				
 				if (inst instanceof DataGenCPInstruction) {
@@ -382,6 +418,16 @@ public class LineageRecomputeUtils {
 									OpOp1.valueOfByOpcode(item.getOpcode())));
 							else //cpvar, write
 								operands.put(item.getId(), operands.get(item.getInputs()[0].getId()));
+							break;
+						}
+						case StringInit: {
+							HashMap<String, Hop> params = new HashMap<>();
+							params.put(DataExpression.RAND_ROWS, operands.get(item.getInputs()[0].getId()));
+							params.put(DataExpression.RAND_COLS, operands.get(item.getInputs()[1].getId()));
+							params.put(DataExpression.RAND_MIN, operands.get(item.getInputs()[2].getId()));
+							params.put(DataExpression.RAND_MAX, operands.get(item.getInputs()[2].getId()));
+							Hop datagen = new DataGenOp(OpOpDG.SINIT, new DataIdentifier("tmp"), params);
+							operands.put(item.getId(), datagen);
 							break;
 						}
 						default:

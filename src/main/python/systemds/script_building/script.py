@@ -19,11 +19,12 @@
 #
 # -------------------------------------------------------------
 
-from typing import Any, Collection, KeysView, Tuple, Union, Optional, Dict, TYPE_CHECKING
+from typing import (TYPE_CHECKING, Any, Collection, Dict, KeysView, List,
+                    Optional, Tuple, Union)
 
+from py4j.protocol import Py4JNetworkError
 from py4j.java_collections import JavaArray
-from py4j.java_gateway import JavaObject, JavaGateway
-
+from py4j.java_gateway import JavaGateway, JavaObject
 from systemds.script_building.dag import DAGNode, OutputType
 from systemds.utils.consts import VALID_INPUT_TYPES
 
@@ -35,16 +36,12 @@ if TYPE_CHECKING:
 class DMLScript:
     """DMLScript is the class used to describe our intended behavior in DML. This script can be then executed to
     get the results.
-
-    TODO caching
-
-    TODO rerun with different inputs without recompilation
     """
     sds_context: 'SystemDSContext'
     dml_script: str
     inputs: Dict[str, DAGNode]
     prepared_script: Optional[Any]
-    out_var_name: str
+    out_var_name: List[str]
     _variable_counter: int
 
     def __init__(self, context: 'SystemDSContext') -> None:
@@ -70,7 +67,7 @@ class DMLScript:
         """
         self.inputs[var_name] = input_var
 
-    def execute(self, lineage: bool = False) -> Union[JavaObject, Tuple[JavaObject, str]]:
+    def execute(self) -> JavaObject:
         """If not already created, create a preparedScript from our DMLCode, pass python local data to our prepared
         script, then execute our script and return the resultVariables
 
@@ -78,6 +75,50 @@ class DMLScript:
         """
         # we could use the gateway directly, non defined functions will be automatically
         # sent to the entry_point, but this is safer
+
+        try:
+            self.__prepare_script()
+            ret = self.prepared_script.executeScript()
+            return ret
+        except Py4JNetworkError:
+            exception_str = "Py4JNetworkError: no connection to JVM, most likely due to previous crash or closed JVM from calls to close()"
+            trace_back_limit = 0
+        except Exception as e:
+            exception_str = str(e)
+            trace_back_limit = None
+        self.sds_context.exception_and_close(exception_str, trace_back_limit)
+        
+
+    def execute_with_lineage(self) -> Tuple[JavaObject, str]:
+        """If not already created, create a preparedScript from our DMLCode, pass python local data to our prepared
+        script, then execute our script and return the resultVariables
+
+        :return: resultVariables of our execution and the string lineage trace
+        """
+        # we could use the gateway directly, non defined functions will be automatically
+        # sent to the entry_point, but this is safer
+        try:
+            connection = self.__prepare_script()
+            connection.setLineage(True)
+            ret = self.prepared_script.executeScript()
+
+            if len(self.out_var_name) == 1:
+                return ret, self.prepared_script.getLineageTrace(self.out_var_name[0])
+            else:
+                traces = []
+                for output in self.out_var_name:
+                    traces.append(self.prepared_script.getLineageTrace(output))
+                return ret, traces
+
+        except Py4JNetworkError:
+            exception_str = "Py4JNetworkError: no connection to JVM, most likely due to previous crash or closed JVM from calls to close()"
+            trace_back_limit = 0
+        except Exception as e:
+            exception_str = str(e)
+            trace_back_limit = None
+        self.sds_context.exception_and_close(exception_str, trace_back_limit)
+
+    def __prepare_script(self):
         gateway = self.sds_context.java_gateway
         entry_point = gateway.entry_point
         if self.prepared_script is None:
@@ -90,24 +131,7 @@ class DMLScript:
             for (name, input_node) in self.inputs.items():
                 input_node.pass_python_data_to_prepared_script(
                     self.sds_context, name, self.prepared_script)
-
-            if lineage:
-                connection.setLineage(True)
-        try:
-            ret = self.prepared_script.executeScript()
-        except Exception as e:
-            self.sds_context.exception_and_close(e)
-
-        if lineage:
-            if len(self.out_var_name) == 1:
-                return ret, self.prepared_script.getLineageTrace(self.out_var_name[0])
-            else:
-                traces = []
-                for output in self.out_var_name:
-                    traces.append(self.prepared_script.getLineageTrace(output))
-                return ret, traces
-
-        return ret
+            return connection
 
     def get_lineage(self) -> str:
         gateway = self.sds_context.java_gateway
@@ -140,10 +164,10 @@ class DMLScript:
         :param dag_root: the topmost operation of our DAG, result of operation will be output
         """
         baseOutVarString = self._dfs_dag_nodes(dag_root)
-        if(dag_root.output_type != OutputType.NONE):
-            if(dag_root.number_of_outputs > 1):
+        if dag_root.output_type != OutputType.NONE:
+            if dag_root.output_type == OutputType.MULTI_RETURN:
                 self.out_var_name = []
-                for idx in range(dag_root.number_of_outputs):
+                for idx, output_node in enumerate(dag_root._outputs):
                     self.add_code(
                         f'write({baseOutVarString}_{idx}, \'./tmp_{idx}\');')
                     self.out_var_name.append(f'{baseOutVarString}_{idx}')
@@ -151,6 +175,9 @@ class DMLScript:
                 self.out_var_name.append(baseOutVarString)
                 self.add_code(f'write({baseOutVarString}, \'./tmp\');')
 
+    def clear(self, dag_root: DAGNode):
+        self._dfs_clear_dag_nodes(dag_root)
+        self._variable_counter = 0
 
     def _dfs_dag_nodes(self, dag_node: VALID_INPUT_TYPES) -> str:
         """Uses Depth-First-Search to create code from DAG
@@ -162,20 +189,51 @@ class DMLScript:
             if isinstance(dag_node, bool):
                 return 'TRUE' if dag_node else 'FALSE'
             return str(dag_node)
+
+        # If the node already have a name then it is already defined
+        # in the script, therefore reuse.
+        if dag_node.dml_name != "":
+            return dag_node.dml_name
+
+        if dag_node._source_node is not None:
+            self._dfs_dag_nodes(dag_node._source_node)
         # for each node do the dfs operation and save the variable names in `input_var_names`
         # get variable names of unnamed parameters
-        unnamed_input_vars = [self._dfs_dag_nodes(
-            input_node) for input_node in dag_node.unnamed_input_nodes]
-        # get variable names of named parameters
-        named_input_vars = {name: self._dfs_dag_nodes(input_node) for name, input_node in
-                            dag_node.named_input_nodes.items()}
-        curr_var_name = self._next_unique_var()
+
+        unnamed_input_vars = []
+        for un_node in dag_node.unnamed_input_nodes:
+            unnamed_input_vars.append(self._dfs_dag_nodes(un_node))
+
+        named_input_vars = {}
+        for name, input_node in dag_node.named_input_nodes.items():
+            named_input_vars[name] = self._dfs_dag_nodes(input_node)
+
+        # check if the node gets a name after multireturns
+        # If it has, great, return that name
+        if dag_node.dml_name != "":
+            return dag_node.dml_name
+
+        dag_node.dml_name = self._next_unique_var()
+
         if dag_node.is_python_local_data:
-            self.add_input_from_python(curr_var_name, dag_node)
+            self.add_input_from_python(dag_node.dml_name, dag_node)
+
         code_line = dag_node.code_line(
-            curr_var_name, unnamed_input_vars, named_input_vars)
+            dag_node.dml_name, unnamed_input_vars, named_input_vars)
+
         self.add_code(code_line)
-        return curr_var_name
+        return dag_node.dml_name
+
+    def _dfs_clear_dag_nodes(self, dag_node: VALID_INPUT_TYPES) -> str:
+        if not isinstance(dag_node, DAGNode):
+            return
+        dag_node.dml_name = ""
+        for n in dag_node.unnamed_input_nodes:
+            self._dfs_clear_dag_nodes(n)
+        for name, n in dag_node.named_input_nodes.items():
+            self._dfs_clear_dag_nodes(n)
+        if dag_node._source_node is not None:
+            self._dfs_clear_dag_nodes(dag_node._source_node)
 
     def _next_unique_var(self) -> str:
         """Gets the next unique variable name

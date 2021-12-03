@@ -44,7 +44,7 @@ import org.apache.sysds.utils.Statistics;
 
 import java.util.Arrays;
 
-public class ResultMergeRemoteSpark extends ResultMerge
+public class ResultMergeRemoteSpark extends ResultMergeMatrix
 {
 	private static final long serialVersionUID = -6924566953903424820L;
 	
@@ -198,7 +198,7 @@ public class ResultMergeRemoteSpark extends ResultMerge
 		return (int)Math.min( numRed, reducerGroups );
 	}
 	
-	@SuppressWarnings({ "unchecked", "cast" })
+	@SuppressWarnings({ "unchecked"})
 	private static void setRDDHandleForMerge(MatrixObject mo, SparkExecutionContext sec) {
 		InputOutputInfo iinfo = InputOutputInfo.get(DataType.MATRIX, FileFormat.BINARY);
 		JavaPairRDD<MatrixIndexes,MatrixBlock> rdd = (JavaPairRDD<MatrixIndexes,MatrixBlock>) sec.getSparkContext().hadoopFile(

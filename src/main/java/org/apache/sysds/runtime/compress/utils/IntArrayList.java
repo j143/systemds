@@ -42,7 +42,7 @@ public class IntArrayList {
 		appendValue(value);
 	}
 
-	public IntArrayList(int[] values){
+	public IntArrayList(int[] values) {
 		_data = values;
 		_size = values.length;
 	}
@@ -64,9 +64,8 @@ public class IntArrayList {
 			_data = new int[INIT_CAPACITY];
 			_data[0] = _val0;
 		}
-		else if(_size + 1 >= _data.length) {
+		else if(_size + 1 >= _data.length)
 			resize();
-		}
 
 		// append value
 		_data[_size] = value;
@@ -74,8 +73,8 @@ public class IntArrayList {
 	}
 
 	/**
-	 * Returns the underlying array of offsets. Note that this array might be physically larger than the actual length
-	 * of the offset lists. Use size() to obtain the actual length.
+	 * Returns the underlying array of offsets. Note that this array might be physically larger than the actual length of
+	 * the offset lists. Use size() to obtain the actual length.
 	 * 
 	 * @return integer array of offsets, the physical array length may be larger than the length of the offset list
 	 */
@@ -84,6 +83,15 @@ public class IntArrayList {
 			return new int[] {_val0};
 		else
 			return _data;
+	}
+
+	public int get(int index) {
+		if(_data != null)
+			return _data[index];
+		else if(index == 0)
+			return _val0;
+		else
+			throw new RuntimeException("invalid index to get");
 	}
 
 	public int[] extractValues(boolean trim) {
@@ -101,18 +109,18 @@ public class IntArrayList {
 	}
 
 	@Override
-	public String toString(){
+	public String toString() {
 		StringBuilder sb = new StringBuilder();
-		
-		if(_size == 1){
+
+		if(_size == 1)
 			sb.append(_val0);
-		} else{
+		else {
 			sb.append("[");
 			int i = 0;
-			for(; i < _size-1; i++){
+			for(; i < _size - 1; i++)
 				sb.append(_data[i] + ",");
-			}
-			sb.append(_data[i]+"]");
+
+			sb.append(_data[i] + "]");
 		}
 		return sb.toString();
 	}

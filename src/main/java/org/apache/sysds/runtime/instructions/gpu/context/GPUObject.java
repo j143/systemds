@@ -83,7 +83,7 @@ public class GPUObject {
 	protected boolean writeLock = false;
 
 	/**
-	 * Timestamp, needed by {@link GPUContext#evict(long)}
+	 * Timestamp, needed by {@link GPUContext\#evict(long)}
 	 */
 	AtomicLong timestamp = new AtomicLong();
 
@@ -101,6 +101,27 @@ public class GPUObject {
 	 * Shadow buffer instance
 	 */
 	final ShadowBuffer shadowBuffer;
+	
+	/**
+	 * whether cached in lineage cache
+	 */
+	private boolean isLineageCached = false;
+	
+	/**
+	 * whether remove variable is called on this object.
+	 * True -> live; False -> not-live
+	 */
+	private boolean rmVarPending = false;
+	
+	/**
+	 * Next GPUObject that points to the same lineage cached GPU pointer
+	 */
+	public GPUObject lineageCachedChainHead = null;
+	
+	/**
+	 * Head of the linked list of GPUObjects that point to the same lineage cached GPU pointer
+	 */
+	public GPUObject nextLineageCachedEntry = null;
 	
 	// ----------------------------------------------------------------------
 	// Methods used to access, set and check jcudaDenseMatrixPtr
@@ -134,6 +155,9 @@ public class GPUObject {
 		shadowBuffer.clearShadowPointer();
 	}
 	
+	public MatrixObject getMatrixObject() {
+		return mat;
+	}
 	
 	/**
 	 * Convenience method to directly set the dense matrix pointer on GPU
@@ -153,6 +177,10 @@ public class GPUObject {
 			getJcudaSparseMatrixPtr().deallocate();
 			jcudaSparseMatrixPtr = null;
 		}
+	}
+	
+	public void setDirty(boolean flag) {
+		dirty = flag;
 	}
 	// ----------------------------------------------------------------------
 
@@ -432,12 +460,28 @@ public class GPUObject {
 	/**
 	 * Initializes this GPUObject with a {@link MatrixObject} instance which will contain metadata about the enclosing matrix block
 	 *
-	 * @param mat2 the matrix block that owns this {@link GPUObject}
+	 * @param mat2 the matrix object that owns this {@link GPUObject}
 	 */
 	GPUObject(GPUContext gCtx, MatrixObject mat2) {
 		gpuContext = gCtx;
 		this.mat = mat2;
 		this.shadowBuffer = new ShadowBuffer(this);
+	}
+
+	public GPUObject(GPUContext gCtx, GPUObject that, MatrixObject mat) {
+		dirty = that.dirty;
+		readLocks.reset();
+		writeLock = false;
+		timestamp = new AtomicLong(that.timestamp.get());
+		isSparse = that.isSparse;
+		isLineageCached = that.isLineageCached;
+		if (!that.isDensePointerNull())
+			setDensePointer(that.getDensePointer());
+		if (that.getJcudaSparseMatrixPtr() != null)
+			setSparseMatrixCudaPointer(that.getSparseMatrixCudaPointer());
+		gpuContext = gCtx;
+		this.mat = mat;
+		shadowBuffer = new ShadowBuffer(this);
 	}
 
 	public boolean isSparse() {
@@ -742,7 +786,24 @@ public class GPUObject {
 		setSparseMatrixCudaPointer(tmp);
 	}
 
-	protected long getSizeOnDevice() {
+	void allocateSparseMatrixOnDevice(long numVals) {
+		// This method is called when #values > nnz
+		if(LOG.isTraceEnabled()) {
+			LOG.trace("GPU : allocateSparseMatrixOnDevice, on " + this + ", GPUContext=" + getGPUContext());
+		}
+		if(isAllocated()) 
+			throw new DMLRuntimeException("Internal error - trying to allocated sparse matrix to a GPUObject that is already allocated");
+		long rows = mat.getNumRows();
+		long nnz = mat.getNnz();
+		if(rows <= 0)
+			throw new DMLRuntimeException("Internal error - invalid number of rows when allocating sparse matrix");
+		if(nnz < 0)
+			throw new DMLRuntimeException("Internal error - invalid number of non zeroes when allocating a sparse matrix");
+		CSRPointer tmp = CSRPointer.allocateEmpty(getGPUContext(), numVals, rows);
+		setSparseMatrixCudaPointer(tmp);
+	}
+
+	public long getSizeOnDevice() {
 		long GPUSize = 0;
 		long rlen = mat.getNumRows();
 		long clen = mat.getNumColumns();
@@ -784,7 +845,8 @@ public class GPUObject {
 				copyToDevice = false;
 			} else if (block == null && tmp.getNonZeros() != 0) {
 				throw new DMLRuntimeException("Expected CP sparse block to be not null.");
-			} else {
+			}
+			else {
 				// CSR is the preferred format for cuSparse GEMM
 				// Converts MCSR and COO to CSR
 				SparseBlockCSR csrBlock = null;
@@ -819,7 +881,13 @@ public class GPUObject {
 				values = csrBlock.values();
 			}
 
-			allocateSparseMatrixOnDevice();
+			if (values != null)
+				if(values.length > tmp.getNonZeros())
+					allocateSparseMatrixOnDevice(values.length);
+				else
+					allocateSparseMatrixOnDevice();
+			else
+				allocateSparseMatrixOnDevice();
 
 			if (copyToDevice) {
 				CSRPointer.copyToDevice(getGPUContext(), getJcudaSparseMatrixPtr(),
@@ -890,7 +958,8 @@ public class GPUObject {
 			}
 		}
 		else if(shadowBuffer.isEligibleForBuffering(isEviction, eagerDelete)) {
-			// Perform shadow buffering if (1) single precision, (2) during eviction, (3) for dense matrices, and (4) if the given matrix can fit into the shadow buffer. 
+			// Perform shadow buffering if (1) single precision, (2) during eviction, (3) eagerDelete is true 
+			// (4) for dense matrices, and (5) if the given matrix can fit into the shadow buffer. 
 			shadowBuffer.moveFromDevice(instName);
 			return;
 		}
@@ -910,7 +979,9 @@ public class GPUObject {
 			mat.release();
 			return;
 		}
-		
+		boolean sparse = false;
+		if(isDensePointerNull())
+			sparse = true;
 		MatrixBlock tmp = null;
 		long start = DMLScript.STATISTICS ? System.nanoTime() : 0;
 		if (!isDensePointerNull()) {
@@ -918,7 +989,7 @@ public class GPUObject {
 			tmp.allocateDenseBlock();
 			LibMatrixCUDA.cudaSupportFunctions.deviceToHost(getGPUContext(),
 						getDensePointer(), tmp.getDenseBlockValues(), instName, isEviction);
-			if(eagerDelete)
+			if(eagerDelete && !isLinCached())
 				clearData(instName, true);
 			tmp.recomputeNonZeros();
 		} else {
@@ -930,7 +1001,7 @@ public class GPUObject {
 			int[] rowPtr = new int[rows + 1];
 			int[] colInd = new int[nnz];
 			CSRPointer.copyPtrToHost(getJcudaSparseMatrixPtr(), rows, nnz, rowPtr, colInd);
-			if(eagerDelete)
+			if(eagerDelete && !isLinCached())
 				clearData(instName, true);
 			SparseBlockCSR sparseBlock = new SparseBlockCSR(rowPtr, colInd, values, nnz);
 			tmp = new MatrixBlock(rows, cols, nnz, sparseBlock);
@@ -940,11 +1011,46 @@ public class GPUObject {
 		if (DMLScript.STATISTICS && !isEviction) {
 			// Eviction time measure in malloc
 			long totalTime = System.nanoTime() - start;
-			int count = !isDensePointerNull() ? 1 : 3;
+			int count = sparse ? 3 : 1;
 			GPUStatistics.cudaFromDevTime.add(totalTime);
 			GPUStatistics.cudaFromDevCount.add(count);
 		}
 		dirty = false;
+	}
+	
+	// Copy and convert to a MatrixBlock, and return
+	public MatrixBlock evictFromDeviceToHostMB(String instName, boolean eagerDelete) throws DMLRuntimeException {
+		if(LOG.isTraceEnabled()) {
+			LOG.trace("GPU : copyFromDeviceToHost, on " + this + ", GPUContext=" + getGPUContext());
+		}
+		MatrixBlock tmp = null;
+		if (!isDensePointerNull()) {
+			tmp = new MatrixBlock(toIntExact(mat.getNumRows()), toIntExact(mat.getNumColumns()), false);
+			tmp.allocateDenseBlock();
+			LibMatrixCUDA.cudaSupportFunctions.deviceToHost(getGPUContext(),
+						getDensePointer(), tmp.getDenseBlockValues(), instName, true);
+			//if(eagerDelete)
+			//	clearData(instName, true);
+			tmp.recomputeNonZeros();
+		} else {
+			int rows = toIntExact(mat.getNumRows());
+			int cols = toIntExact(mat.getNumColumns());
+			int nnz = toIntExact(getJcudaSparseMatrixPtr().nnz);
+			double[] values = new double[nnz];
+			LibMatrixCUDA.cudaSupportFunctions.deviceToHost(getGPUContext(), getJcudaSparseMatrixPtr().val, values, instName, true);
+			int[] rowPtr = new int[rows + 1];
+			int[] colInd = new int[nnz];
+			CSRPointer.copyPtrToHost(getJcudaSparseMatrixPtr(), rows, nnz, rowPtr, colInd);
+			//if(eagerDelete)
+			//	clearData(instName, true);
+			SparseBlockCSR sparseBlock = new SparseBlockCSR(rowPtr, colInd, values, nnz);
+			tmp = new MatrixBlock(rows, cols, nnz, sparseBlock);
+		}
+		//mat.acquireModify(tmp);
+		//mat.release();
+		//dirty = false;
+		//isLineageCached = false;
+		return tmp;
 	}
 
 
@@ -955,7 +1061,10 @@ public class GPUObject {
 	 * @param eager whether to be done synchronously or asynchronously
 	 * @throws DMLRuntimeException if error occurs
 	 */
-	public void clearData(String opcode, boolean eager) throws DMLRuntimeException {
+	synchronized public void clearData(String opcode, boolean eager) throws DMLRuntimeException {
+		if (isLineageCached)
+			return;
+
 		if(LOG.isTraceEnabled()) {
 			LOG.trace("GPU : clearData on " + this + ", GPUContext=" + getGPUContext());
 		}
@@ -969,6 +1078,21 @@ public class GPUObject {
 		shadowBuffer.clearShadowPointer();
 		jcudaSparseMatrixPtr = null;
 		resetReadWriteLock();
+		setrmVarPending(false);
+		getGPUContext().getMemoryManager().removeGPUObject(this);
+	}
+	
+	public void clearGPUObject() {
+		if (isLineageCached)
+			return;
+		if(LOG.isTraceEnabled())
+			LOG.trace("GPU : clearData on " + this + ", GPUContext=" + getGPUContext());
+
+		clearDensePointer();
+		shadowBuffer.clearShadowPointer();
+		jcudaSparseMatrixPtr = null;
+		resetReadWriteLock();
+		setrmVarPending(false);
 		getGPUContext().getMemoryManager().removeGPUObject(this);
 	}
 
@@ -989,6 +1113,22 @@ public class GPUObject {
 	public boolean isDirty() {
 		return dirty;
 	}
+	
+	public void setIsLinCached(boolean val) {
+		isLineageCached = val;
+	}
+
+	public boolean isLinCached() {
+		return isLineageCached;
+	}
+	
+	public void setrmVarPending(boolean val) {
+		rmVarPending = val;
+	}
+	
+	public boolean isrmVarPending() {
+		return rmVarPending;
+	}
 
 	@Override
 	public String toString() {
@@ -1006,7 +1146,7 @@ public class GPUObject {
 		return sb.toString();
 	}
 
-	private static long getPointerAddress(Pointer p) {
+	private static long getPointerAddressInternal(Pointer p) {
 		// WORKAROUND until a method like CUdeviceptr#getAddress exists in jCuda
 		class PointerWithAddress extends Pointer
 		{
@@ -1021,8 +1161,11 @@ public class GPUObject {
 		}
 		return new PointerWithAddress(p).getAddress();
 	}
-
-	public long getPointerAddress() {
-		return getPointerAddress(getDensePointer());
+	
+	public long getDensePointerAddress() {
+		return getPointerAddressInternal(getDensePointer());
 	}
-}
+	
+	public static long getPointerAddress(Pointer p) {
+		return (p == null) ?  0 : getPointerAddressInternal(p);
+	}}

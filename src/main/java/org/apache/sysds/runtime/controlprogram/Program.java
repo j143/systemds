@@ -35,8 +35,8 @@ public class Program
 	public static final String KEY_DELIM = "::";
 	
 	private DMLProgram _prog;
-	private ArrayList<ProgramBlock> _programBlocks;
-	private HashMap<String, FunctionDictionary<FunctionProgramBlock>> _namespaces;
+	private final ArrayList<ProgramBlock> _programBlocks;
+	private final HashMap<String, FunctionDictionary<FunctionProgramBlock>> _namespaces;
 	
 	public Program() {
 		_namespaces = new HashMap<>();
@@ -55,6 +55,11 @@ public class Program
 	
 	public DMLProgram getDMLProg() {
 		return _prog;
+	}
+	
+	public synchronized void addFunctionProgramBlock(String fkey, FunctionProgramBlock fpb, boolean opt) {
+		String[] parts = DMLProgram.splitFunctionKey(fkey);
+		addFunctionProgramBlock(parts[0], parts[1], fpb, opt);
 	}
 	
 	public synchronized void addFunctionProgramBlock(String namespace, String fname, FunctionProgramBlock fpb) {

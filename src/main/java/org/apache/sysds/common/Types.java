@@ -19,9 +19,10 @@
 
 package org.apache.sysds.common;
 
-import org.apache.sysds.runtime.DMLRuntimeException;
+import java.util.Arrays;
+import java.util.HashMap;
 
-import edu.emory.mathcs.backport.java.util.Arrays;
+import org.apache.sysds.runtime.DMLRuntimeException;
 
 public class Types
 {
@@ -38,7 +39,7 @@ public class Types
 	 * Execution type of individual operations.
 	 */
 	public enum ExecType { CP, CP_FILE, SPARK, GPU, FED, INVALID }
-	
+
 	/**
 	 * Data types (tensor, matrix, scalar, frame, object, unknown).
 	 */
@@ -53,6 +54,9 @@ public class Types
 		}
 		public boolean isFrame() {
 			return this == FRAME;
+		}
+		public boolean isMatrixOrFrame() {
+			return isMatrix() | isFrame();
 		}
 		public boolean isScalar() {
 			return this == SCALAR;
@@ -105,9 +109,13 @@ public class Types
 				case "INT":      return INT64;
 				case "BOOLEAN":  return BOOLEAN;
 				case "STRING":   return STRING;
+				case "UNKNOWN":  return UNKNOWN;
 				default:
 					throw new DMLRuntimeException("Unknown value type: "+value);
 			}
+		}
+		public static boolean isSameTypeString(ValueType vt1, ValueType vt2) {
+			return vt1.toExternalString().equals(vt2.toExternalString());
 		}
 	}
 	
@@ -139,7 +147,12 @@ public class Types
 		RowCol, // full aggregate
 		Row,    // row aggregate (e.g., rowSums)
 		Col;    // column aggregate (e.g., colSums)
-		
+		public boolean isRow() {
+			return this == Row;
+		}
+		public boolean isCol() {
+			return this == Col;
+		}
 		@Override
 		public String toString() {
 			switch(this) {
@@ -173,14 +186,14 @@ public class Types
 		}
 	}
 	
+	// these values need to match with their native counterparts (spoof cuda ops)
 	public enum AggOp {
-		SUM, SUM_SQ,
-		PROD, SUM_PROD,
-		MIN, MAX,
-		TRACE, MEAN, VAR,
-		MAXINDEX, MININDEX,
-		COUNT_DISTINCT,
-		COUNT_DISTINCT_APPROX;
+		SUM(0), SUM_SQ(1), MIN(2), MAX(3),
+		PROD(4), SUM_PROD(5),
+		TRACE(6), MEAN(7), VAR(8),
+		MAXINDEX(9), MININDEX(10),
+		COUNT_DISTINCT(11),
+		COUNT_DISTINCT_APPROX(12);
 		
 		@Override
 		public String toString() {
@@ -191,22 +204,46 @@ public class Types
 				default:     return name().toLowerCase();
 			}
 		}
+		
+		private final int value;
+		private final static HashMap<Integer, AggOp> map = new HashMap<>();
+		
+		AggOp(int value) {
+			this.value = value;
+		}
+		
+		static {
+			for (AggOp aggOp : AggOp.values()) {
+				map.put(aggOp.value, aggOp);
+			}
+		}
+		
+		public static AggOp valueOf(int aggOp) {
+			return map.get(aggOp);
+		}
+		
+		public int getValue() {
+			return value;
+		}
 	}
 	
 	// Operations that require 1 operand
 	public enum OpOp1 {
-		ABS, ACOS, ASIN, ASSERT, ATAN, CAST_AS_SCALAR, CAST_AS_MATRIX,
+		ABS, ACOS, ASIN, ASSERT, ATAN, BROADCAST, CAST_AS_SCALAR, CAST_AS_MATRIX,
 		CAST_AS_FRAME, CAST_AS_DOUBLE, CAST_AS_INT, CAST_AS_BOOLEAN,
 		CEIL, CHOLESKY, COS, COSH, CUMMAX, CUMMIN, CUMPROD, CUMSUM,
 		CUMSUMPROD, DETECTSCHEMA, COLNAMES, EIGEN, EXISTS, EXP, FLOOR, INVERSE,
 		IQM, ISNA, ISNAN, ISINF, LENGTH, LINEAGE, LOG, NCOL, NOT, NROW,
-		MEDIAN, PRINT, ROUND, SIN, SINH, SIGN, SOFTMAX, SQRT, STOP, SVD,
-		TAN, TANH, TYPEOF,
+		MEDIAN, PREFETCH, PRINT, ROUND, SIN, SINH, SIGN, SOFTMAX, SQRT, STOP,
+		SVD, TAN, TANH, TYPEOF,
 		//fused ML-specific operators for performance 
 		SPROP, //sample proportion: P * (1 - P)
 		SIGMOID, //sigmoid function: 1 / (1 + exp(-X))
 		LOG_NZ, //sparse-safe log; ppred(X,0,"!=")*log(X)
 		
+		COMPRESS, DECOMPRESS,
+		LOCAL, // instruction to pull data back from spark forcefully and return a CP matrix.
+
 		//low-level operators //TODO used?
 		MULT2, MINUS1_MULT, MINUS_RIGHT, 
 		POW2, SUBTRACT_NZ;
@@ -234,7 +271,6 @@ public class Types
 				case CUMPROD:         return "ucum*";
 				case CUMSUM:          return "ucumk+";
 				case CUMSUMPROD:      return "ucumk+*";
-				case COLNAMES:        return "colnames";
 				case DETECTSCHEMA:    return "detectSchema";
 				case MULT2:           return "*2";
 				case NOT:             return "!";
@@ -258,9 +294,11 @@ public class Types
 				case "ucum*":   return CUMPROD;
 				case "ucumk+":  return CUMSUM;
 				case "ucumk+*": return CUMSUMPROD;
+				case "detectSchema":    return DETECTSCHEMA;
 				case "*2":      return MULT2;
 				case "!":       return NOT;
 				case "^2":      return POW2;
+				case "typeOf":          return TYPEOF;
 				default:        return valueOf(opcode.toUpperCase());
 			}
 		}
@@ -274,8 +312,8 @@ public class Types
 		GREATEREQUAL(true), INTDIV(true), INTERQUANTILE(false), IQM(false), LESS(true),
 		LESSEQUAL(true), LOG(true), MAP(false), MAX(true), MEDIAN(false), MIN(true), 
 		MINUS(true), MODULUS(true), MOMENT(false), MULT(true), NOTEQUAL(true), OR(true),
-		PLUS(true), POW(true), PRINT(false), QUANTILE(false), SOLVE(false), RBIND(false),
-		XOR(true),
+		PLUS(true), POW(true), PRINT(false), QUANTILE(false), SOLVE(false),
+		RBIND(false), VALUE_SWAP(false), XOR(true),
 		//fused ML-specific operators for performance
 		MINUS_NZ(false), //sparse-safe minus: X-(mean*ppred(X,0,!=))
 		LOG_NZ(false), //sparse-safe log; ppred(X,0,"!=")*log(X,0.5)
@@ -320,6 +358,7 @@ public class Types
 				case BITWSHIFTR:   return "bitwShiftR";
 				case DROP_INVALID_TYPE: return "dropInvalidType";
 				case DROP_INVALID_LENGTH: return "dropInvalidLength";
+				case VALUE_SWAP: return "valueSwap";
 				case MAP:          return "_map";
 				default:           return name().toLowerCase();
 			}
@@ -354,6 +393,7 @@ public class Types
 				case "bitwShiftR":  return BITWSHIFTR;
 				case "dropInvalidType": return DROP_INVALID_TYPE;
 				case "dropInvalidLength": return DROP_INVALID_LENGTH;
+				case "valueSwap": return VALUE_SWAP;
 				case "map":         return MAP;
 				default:            return valueOf(opcode.toUpperCase());
 			}
@@ -432,10 +472,10 @@ public class Types
 	}
 	
 	public enum ParamBuiltinOp {
-		INVALID, CDF, INVCDF, GROUPEDAGG, RMEMPTY, REPLACE, REXPAND,
+		AUTODIFF, INVALID, CDF, INVCDF, GROUPEDAGG, RMEMPTY, REPLACE, REXPAND,
 		LOWER_TRI, UPPER_TRI,
 		TRANSFORMAPPLY, TRANSFORMDECODE, TRANSFORMCOLMAP, TRANSFORMMETA,
-		TOSTRING, LIST, PARAMSERV
+		TOKENIZE, TOSTRING, LIST, PARAMSERV
 	}
 	
 	public enum OpOpDnn {
@@ -448,7 +488,7 @@ public class Types
 	}
 	
 	public enum OpOpDG {
-		RAND, SEQ, SINIT, SAMPLE, TIME
+		RAND, SEQ, FRAMEINIT, SINIT, SAMPLE, TIME
 	}
 	
 	public enum OpOpData {
@@ -484,7 +524,6 @@ public class Types
 			}
 		}
 	}
-	
 
 	public enum FileFormat {
 		TEXT,   // text cell IJV representation (mm w/o header)
@@ -494,9 +533,10 @@ public class Types
 		JSONL,  // text nested JSON (Line) representation
 		BINARY, // binary block representation (dense/sparse/ultra-sparse)
 		FEDERATED, // A federated matrix
-		PROTO;  // protocol buffer representation
+		PROTO,  // protocol buffer representation
+		HDF5; // Hierarchical Data Format (HDF)
 		
-		public boolean isIJVFormat() {
+		public boolean isIJV() {
 			return this == TEXT || this == MM;
 		}
 		
@@ -545,7 +585,7 @@ public class Types
 			}
 			catch(Exception ex) {
 				throw new DMLRuntimeException("Unknown file format: "+fmt
-					+ " (valid values: "+Arrays.toString(FileFormat.values())+")");
+					+ " (valid values: " + Arrays.toString(FileFormat.values())+")");
 			}
 		}
 	}

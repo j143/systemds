@@ -41,21 +41,8 @@ buildNumber.properties
 .jekyll-cache/
 _site/
 
-# Python artifacts
-src/main/python/systemds/systemds-java/
-src/main/python/systemds.egg-info/
-src/main/python/build/
-src/main/python/LICENSE
-src/main/python/NOTICE
-src/main/python/dist
-src/main/python/docs/build
-src/main/python/docs/source/_build
-src/main/python/tests/onnx_systemds/output_test
-src/main/python/tests/onnx_systemds/dml_output
-src/main/python/tests/onnx_systemds/test_models/*.onnx
-
 # Tutorial data mnist
-src/main/python/systemds/examples/tutorials/mnist/
+src/main/python/systemds/examples/tutorials/*/
 
 # User configuration files
 conf/SystemDS-config.xml
@@ -113,3 +100,10 @@ src/main/cpp/bin
 
 # Performance Test artifacts
 scripts/perftest/results
+scripts/perftest/logs
+scripts/perftest/in
+scripts/perftest/scratch_space
+scripts/perftest/temp
+scripts/perftest/fed/results
+scripts/perftest/fed/scratch_space
+scripts/perftest/fed/temp

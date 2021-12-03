@@ -19,7 +19,7 @@
 
 package org.apache.sysds.test.functions.federated.primitives;
 
-import org.junit.Ignore;
+import org.apache.sysds.hops.OptimizerUtils;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -68,15 +68,26 @@ public class FederatedMultiplyTest extends AutomatedTestBase {
 		federatedMultiply(Types.ExecMode.SINGLE_NODE);
 	}
 
+	@Test
+	public void federatedMultiplyCPCompileToFED() {
+		federatedMultiply(Types.ExecMode.SINGLE_NODE, true);
+	}
 
-	@Test 
-	@Ignore
+	@Test
 	public void federatedMultiplySP() {
-		// TODO Fix me Spark execution error
 		federatedMultiply(Types.ExecMode.SPARK);
 	}
 
-	public void federatedMultiply(Types.ExecMode execMode) {
+	@Test
+	public void federatedMultiplySPCompileToFED() {
+		federatedMultiply(Types.ExecMode.SPARK, true);
+	}
+
+	private void federatedMultiply(Types.ExecMode execMode){
+		federatedMultiply(execMode,false);
+	}
+
+	private void federatedMultiply(Types.ExecMode execMode, boolean federatedCompilation) {
 		boolean sparkConfigOld = DMLScript.USE_LOCAL_SPARK_CONFIG;
 		Types.ExecMode platformOld = rtplatform;
 		rtplatform = execMode;
@@ -116,6 +127,7 @@ public class FederatedMultiplyTest extends AutomatedTestBase {
 		runTest(true, false, null, -1);
 
 		// Run actual dml script with federated matrix
+		OptimizerUtils.FEDERATED_COMPILATION = federatedCompilation;
 		fullDMLScriptName = HOME + TEST_NAME + ".dml";
 		programArgs = new String[] {"-nvargs", "X1=" + TestUtils.federatedAddress(port1, input("X1")),
 			"X2=" + TestUtils.federatedAddress(port2, input("X2")),
@@ -124,11 +136,12 @@ public class FederatedMultiplyTest extends AutomatedTestBase {
 		runTest(true, false, null, -1);
 
 		// compare via files
-		compareResults(1e-9);
+		compareResults(1e-9, "Stat-DML1", "Stat-DML2");
 
 		TestUtils.shutdownThreads(t1, t2);
 
 		rtplatform = platformOld;
+		OptimizerUtils.FEDERATED_COMPILATION = false;
 		DMLScript.USE_LOCAL_SPARK_CONFIG = sparkConfigOld;
 	}
 }

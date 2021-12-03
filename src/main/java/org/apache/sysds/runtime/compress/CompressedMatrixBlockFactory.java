@@ -19,6 +19,7 @@
 
 package org.apache.sysds.runtime.compress;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -26,273 +27,513 @@ import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.sysds.api.DMLScript;
-import org.apache.sysds.runtime.DMLRuntimeException;
-import org.apache.sysds.runtime.compress.cocode.PlanningCoCoder;
-import org.apache.sysds.runtime.compress.colgroup.ColGroup;
+import org.apache.sysds.runtime.compress.cocode.CoCoderFactory;
+import org.apache.sysds.runtime.compress.colgroup.AColGroup;
+import org.apache.sysds.runtime.compress.colgroup.ColGroupEmpty;
 import org.apache.sysds.runtime.compress.colgroup.ColGroupFactory;
+import org.apache.sysds.runtime.compress.colgroup.ColGroupUncompressed;
+import org.apache.sysds.runtime.compress.colgroup.AColGroupValue;
+import org.apache.sysds.runtime.compress.cost.ComputationCostEstimator;
+import org.apache.sysds.runtime.compress.cost.CostEstimatorBuilder;
+import org.apache.sysds.runtime.compress.cost.CostEstimatorFactory;
+import org.apache.sysds.runtime.compress.cost.ICostEstimate;
 import org.apache.sysds.runtime.compress.estim.CompressedSizeEstimator;
 import org.apache.sysds.runtime.compress.estim.CompressedSizeEstimatorFactory;
 import org.apache.sysds.runtime.compress.estim.CompressedSizeInfo;
+import org.apache.sysds.runtime.compress.estim.CompressedSizeInfoColGroup;
+import org.apache.sysds.runtime.compress.lib.CLALibUtils;
 import org.apache.sysds.runtime.compress.utils.DblArrayIntListHashMap;
+import org.apache.sysds.runtime.compress.utils.DoubleCountHashMap;
+import org.apache.sysds.runtime.compress.workload.WTreeRoot;
 import org.apache.sysds.runtime.controlprogram.parfor.stat.Timing;
+import org.apache.sysds.runtime.data.SparseBlock;
 import org.apache.sysds.runtime.matrix.data.LibMatrixReorg;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
 import org.apache.sysds.utils.DMLCompressionStatistics;
 
 /**
- * Factory pattern to construct a CompressedMatrixBlock.
+ * Factory pattern to compress a Matrix Block into a CompressedMatrixBlock.
  */
 public class CompressedMatrixBlockFactory {
 
 	private static final Log LOG = LogFactory.getLog(CompressedMatrixBlockFactory.class.getName());
-	private static final CompressionSettings defaultCompressionSettings = new CompressionSettingsBuilder().create();
 
+	/** Timing object to measure the time of each phase in the compression */
+	private final Timing time = new Timing(true);
+	/** Compression statistics gathered throughout the compression */
+	private final CompressionStatistics _stats = new CompressionStatistics();
+	/** Parallelization degree */
+	private final int k;
+	/** Compression settings used for this compression */
+	private final CompressionSettings compSettings;
+	/** The main cost estimator used for the compression */
+	private final ICostEstimate costEstimator;
+
+	/** Time stamp of last phase */
+	private double lastPhase;
+	/** Pointer to the original matrix Block that is about to be compressed. */
+	private MatrixBlock mb;
+	/** The resulting compressed matrix */
+	private CompressedMatrixBlock res;
+	/** The current Phase ID */
+	private int phase = 0;
+	/** Compression information gathered through the sampling, used for the actual compression decided */
+	private CompressedSizeInfo compressionGroups;
+
+	private CompressedMatrixBlockFactory(MatrixBlock mb, int k, CompressionSettingsBuilder compSettings,
+		ICostEstimate costEstimator) {
+		this(mb, k, compSettings.create(), costEstimator);
+	}
+
+	private CompressedMatrixBlockFactory(MatrixBlock mb, int k, CompressionSettings compSettings,
+		ICostEstimate costEstimator) {
+		this.mb = mb;
+		this.k = k;
+		this.compSettings = compSettings;
+		this.costEstimator = costEstimator;
+	}
+
+	/**
+	 * Default sequential compression with no parallelization
+	 * 
+	 * @param mb The matrixBlock to compress
+	 * @return A Pair of a Matrix Block and Compression Statistics.
+	 */
 	public static Pair<MatrixBlock, CompressionStatistics> compress(MatrixBlock mb) {
-		// Default sequential execution of compression
-		return compress(mb, 1, defaultCompressionSettings);
+		return compress(mb, 1, new CompressionSettingsBuilder(), (WTreeRoot) null);
+	}
+
+	public static Pair<MatrixBlock, CompressionStatistics> compress(MatrixBlock mb, WTreeRoot root) {
+		return compress(mb, 1, new CompressionSettingsBuilder(), root);
 	}
 
 	public static Pair<MatrixBlock, CompressionStatistics> compress(MatrixBlock mb,
-		CompressionSettings customSettings) {
-		return compress(mb, 1, customSettings);
+		CompressionSettingsBuilder customSettings) {
+		return compress(mb, 1, customSettings, (WTreeRoot) null);
 	}
 
 	public static Pair<MatrixBlock, CompressionStatistics> compress(MatrixBlock mb, int k) {
-		return compress(mb, k, defaultCompressionSettings);
+		return compress(mb, k, new CompressionSettingsBuilder(), (WTreeRoot) null);
+	}
+
+	public static Pair<MatrixBlock, CompressionStatistics> compress(MatrixBlock mb, int k, WTreeRoot root) {
+		return compress(mb, k, new CompressionSettingsBuilder(), root);
+	}
+
+	public static Pair<MatrixBlock, CompressionStatistics> compress(MatrixBlock mb, int k, ICostEstimate costEstimator) {
+		return compress(mb, k, new CompressionSettingsBuilder(), costEstimator);
+	}
+
+	public static Pair<MatrixBlock, CompressionStatistics> compress(MatrixBlock mb, int k,
+		CompressionSettingsBuilder compSettings) {
+		return compress(mb, k, compSettings, (WTreeRoot) null);
 	}
 
 	/**
 	 * The main method for compressing the input matrix.
 	 * 
-	 * SAMPLE-BASED DECISIONS: Decisions such as testing if a column is amenable to bitmap compression or evaluating
-	 * co-coding potentials are made based on a subset of the rows. For large data sets, sampling might take a
-	 * significant amount of time. So, we generate only one sample and use it for the entire compression process.
-	 * 
-	 * Once the compression plan is selected based on sampling, the plan is verified and decisions are overwritten by
-	 * full estimates.
 	 * 
 	 * @param mb           The matrix block to compress
 	 * @param k            The number of threads used to execute the compression
 	 * @param compSettings The Compression settings used
-	 * @return A compressed matrix block.
+	 * @param root         The root instruction compressed, and used for calculating the computation cost of the
+	 *                     compression
+	 * @return A pair of an possibly compressed matrix block and compression statistics.
 	 */
 	public static Pair<MatrixBlock, CompressionStatistics> compress(MatrixBlock mb, int k,
-		CompressionSettings compSettings) {
-		// Check for redundant compression
-		if(mb instanceof CompressedMatrixBlock) {
-			throw new DMLRuntimeException("Redundant compression, block already compressed.");
+		CompressionSettingsBuilder compSettings, WTreeRoot root) {
+		CompressionSettings cs = compSettings.create();
+		ICostEstimate ice;
+		if(root == null)
+			ice = CostEstimatorFactory.create(cs, null, mb.getNumRows(), mb.getNumColumns(), mb.getSparsity());
+		else {
+			CostEstimatorBuilder csb = new CostEstimatorBuilder(root);
+			ice = CostEstimatorFactory.create(cs, csb, mb.getNumRows(), mb.getNumColumns(), mb.getSparsity());
 		}
-
-		Timing time = new Timing(true);
-		CompressionStatistics _stats = new CompressionStatistics();
-
-		// Prepare basic meta data and deep copy / transpose input
-		int numRows = mb.getNumRows();
-		int numCols = mb.getNumColumns();
-		boolean sparse = mb.isInSparseFormat();
-
-		// Transpose the MatrixBlock if the TransposeInput flag is set.
-		// This gives better cache consciousness, at a small upfront cost.
-		MatrixBlock rawBlock = !compSettings.transposeInput ? new MatrixBlock(mb) : LibMatrixReorg
-			.transpose(mb, new MatrixBlock(numCols, numRows, sparse), k);
-
-		// Construct sample-based size estimator
-		CompressedSizeEstimator sizeEstimator = CompressedSizeEstimatorFactory.getSizeEstimator(rawBlock, compSettings);
-
-		// --------------------------------------------------
-		// PHASE 1: Classify columns by compression type
-		// Start by determining which columns are amenable to compression
-
-		// Classify columns according to ratio (size uncompressed / size compressed),
-		// where a column is compressible if ratio > 1.
-
-		CompressedSizeInfo sizeInfos = sizeEstimator.computeCompressedSizeInfos(k);
-
-		if(compSettings.investigateEstimate)
-			_stats.estimatedSizeCols = sizeInfos.memoryEstimate();
-
-		_stats.setNextTimePhase(time.stop());
-		if (DMLScript.STATISTICS ){
-			DMLCompressionStatistics.addCompressionTime(_stats.getLastTimePhase(), 1);
-		}
-		if(LOG.isDebugEnabled()){
-			LOG.debug("Compression statistics:");
-			LOG.debug("--compression phase 1: " + _stats.getLastTimePhase());
-		}
-
-		if(sizeInfos.colsC.isEmpty()) {
-			LOG.info("Abort block compression because all columns are incompressible.");
-			return new ImmutablePair<>(new MatrixBlock().copyShallow(mb), _stats);
-		}
-		// --------------------------------------------------
-
-		// --------------------------------------------------
-		// PHASE 2: Grouping columns
-		// Divide the columns into column groups.
-		List<int[]> coCodeColGroups = PlanningCoCoder
-			.findCoCodesByPartitioning(sizeEstimator, sizeInfos, numRows, k, compSettings);
-		_stats.setNextTimePhase(time.stop());
-		if (DMLScript.STATISTICS ){
-			DMLCompressionStatistics.addCompressionTime(_stats.getLastTimePhase(), 2);
-		}
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("--compression phase 2: " + _stats.getLastTimePhase());
-			StringBuilder sb = new StringBuilder();
-			for(int[] group : coCodeColGroups)
-				sb.append(Arrays.toString(group));
-			LOG.debug(sb.toString());
-		}
-
-		// TODO: Make second estimate of memory usage if the ColGroups are as above?
-		// This should already be done inside the PlanningCoCoder, and therefore this information
-		// should be returned there, and not estimated twice.
-		// if(INVESTIGATE_ESTIMATES) {
-		// _stats.estimatedSizeColGroups = memoryEstimateIfColsAre(coCodeColGroups);
-		// }
-		// --------------------------------------------------
-
-		// --------------------------------------------------
-		// PHASE 3: Compress and correct sample-based decisions
-		ColGroup[] colGroups = ColGroupFactory
-			.compressColGroups(rawBlock, sizeInfos.compRatios, coCodeColGroups, compSettings, k);
-
-		// Make Compression happen!
-		CompressedMatrixBlock res = new CompressedMatrixBlock(mb);
-		List<ColGroup> colGroupList = ColGroupFactory.assignColumns(numCols, colGroups, rawBlock, compSettings);
-		res.allocateColGroupList(colGroupList);
-		_stats.setNextTimePhase(time.stop());
-		if (DMLScript.STATISTICS ){
-			DMLCompressionStatistics.addCompressionTime(_stats.getLastTimePhase(), 3);
-		}
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("Hash overlap count:" + DblArrayIntListHashMap.hashMissCount);
-			DblArrayIntListHashMap.hashMissCount = 0;
-			LOG.debug("--compression phase 3: " + _stats.getLastTimePhase());
-		}
-		// --------------------------------------------------
-
-		// --------------------------------------------------
-		// PHASE 4: Best-effort dictionary sharing for DDC1 single-col groups
-		// Dictionary dict = (!(compSettings.validCompressions.contains(CompressionType.DDC)) ||
-		// !(compSettings.allowSharedDDCDictionary)) ? null : createSharedDDC1Dictionary(colGroupList);
-		// if(dict != null) {
-		// applySharedDDC1Dictionary(colGroupList, dict);
-		// res._sharedDDC1Dict = true;
-		// }
-		_stats.setNextTimePhase(time.stop());
-		if (DMLScript.STATISTICS ){
-			DMLCompressionStatistics.addCompressionTime(_stats.getLastTimePhase(), 4);
-		}
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("--compression phase 4: " + _stats.getLastTimePhase());
-		}
-		// --------------------------------------------------
-
-		// --------------------------------------------------
-		// Phase 5: Cleanup
-		// The remaining columns are stored uncompressed as one big column group
-		_stats.size = res.estimateCompressedSizeInMemory();
-		_stats.originalSize = mb.estimateSizeInMemory();
-		_stats.ratio = _stats.originalSize / (double) _stats.size;
-
-		if(_stats.ratio < 1) {
-			LOG.info("Abort block compression because compression ratio is less than 1.");
-			return new ImmutablePair<>(new MatrixBlock().copyShallow(mb), _stats);
-		}
-
-		// Final cleanup (discard uncompressed block)
-		rawBlock.cleanupBlock(true, true);
-		res.cleanupBlock(true, true);
-
-		_stats.setNextTimePhase(time.stop());
-		_stats.setColGroupsCounts(colGroupList);
-
-		if (DMLScript.STATISTICS ){
-			DMLCompressionStatistics.addCompressionTime(_stats.getLastTimePhase(), 5);
-		}
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("--num col groups: " + colGroupList.size() + ", -- num input cols: " + numCols);
-			LOG.debug("--compression phase 5: " + _stats.getLastTimePhase());
-			LOG.debug("--col groups types " + _stats.getGroupsTypesString());
-			LOG.debug("--col groups sizes " + _stats.getGroupsSizesString());
-			LOG.debug("--compressed size: " + _stats.size);
-			LOG.debug("--compression ratio: " + _stats.ratio);
-
-			if(LOG.isTraceEnabled()) {
-				for(ColGroup colGroup : colGroupList) {
-					LOG.trace("--colGroups colIndexes : " + Arrays.toString(colGroup.getColIndices()));
-					LOG.trace("--colGroups type       : " + colGroup.getClass().getSimpleName());
-					LOG.trace("--colGroups Values     : " + Arrays.toString(colGroup.getValues()));
-				}
-			}
-		}
-
-		
-		return new ImmutablePair<>(res, _stats);
-		// --------------------------------------------------
+		CompressedMatrixBlockFactory cmbf = new CompressedMatrixBlockFactory(mb, k, cs, ice);
+		return cmbf.compressMatrix();
 	}
 
 	/**
-	 * Dictionary sharing between DDC ColGroups.
+	 * The main method for compressing the input matrix.
 	 * 
-	 * @param colGroups The List of all ColGroups.
-	 * @return the shared value list for the DDC ColGroups.
+	 * @param mb           The matrix block to compress
+	 * @param k            The number of threads used to execute the compression
+	 * @param compSettings The Compression settings used
+	 * @param csb          The cost estimation builder
+	 * @return A pair of an possibly compressed matrix block and compression statistics.
 	 */
-	// private static Dictionary createSharedDDC1Dictionary(List<ColGroup> colGroups) {
-	// // create joint dictionary
-	// HashSet<Double> vals = new HashSet<>();
-	// HashMap<Integer, Double> mins = new HashMap<>();
-	// HashMap<Integer, Double> maxs = new HashMap<>();
-	// int numDDC1 = 0;
-	// for(final ColGroup grp : colGroups)
-	// if(grp.getNumCols() == 1 && grp instanceof ColGroupDDC1) {
-	// final ColGroupDDC1 grpDDC1 = (ColGroupDDC1) grp;
-	// final double[] values = grpDDC1.getValues();
-	// double min = Double.POSITIVE_INFINITY;
-	// double max = Double.NEGATIVE_INFINITY;
-	// for(int i = 0; i < values.length; i++) {
-	// vals.add(values[i]);
-	// min = Math.min(min, values[i]);
-	// max = Math.max(max, values[i]);
-	// }
-	// mins.put(grpDDC1.getColIndex(0), min);
-	// maxs.put(grpDDC1.getColIndex(0), max);
-	// numDDC1++;
-	// }
+	public static Pair<MatrixBlock, CompressionStatistics> compress(MatrixBlock mb, int k,
+		CompressionSettingsBuilder compSettings, CostEstimatorBuilder csb) {
+		CompressionSettings cs = compSettings.create();
+		ICostEstimate ice = CostEstimatorFactory.create(cs, csb, mb.getNumRows(), mb.getNumColumns(), mb.getSparsity());
 
-	// // abort shared dictionary creation if empty or too large
-	// int maxSize = vals.contains(0d) ? 256 : 255;
-	// if(numDDC1 < 2 || vals.size() > maxSize)
-	// return null;
+		CompressedMatrixBlockFactory cmbf = new CompressedMatrixBlockFactory(mb, k, cs, ice);
+		return cmbf.compressMatrix();
+	}
 
-	// // build consolidated shared dictionary
-	// double[] values = vals.stream().mapToDouble(Double::doubleValue).toArray();
-	// int[] colIndexes = new int[numDDC1];
-	// double[] extrema = new double[2 * numDDC1];
-	// int pos = 0;
-	// for(Entry<Integer, Double> e : mins.entrySet()) {
-	// colIndexes[pos] = e.getKey();
-	// extrema[2 * pos] = e.getValue();
-	// extrema[2 * pos + 1] = maxs.get(e.getKey());
-	// pos++;
-	// }
-	// return new DictionaryShared(values, colIndexes, extrema);
-	// }
+	public static Pair<MatrixBlock, CompressionStatistics> compress(MatrixBlock mb, int k,
+		CompressionSettingsBuilder compSettings, ICostEstimate costEstimator) {
+		CompressedMatrixBlockFactory cmbf = new CompressedMatrixBlockFactory(mb, k, compSettings, costEstimator);
+		return cmbf.compressMatrix();
+	}
 
-	// private static void applySharedDDC1Dictionary(List<ColGroup> colGroups, Dictionary dict) {
-	// // create joint mapping table
-	// HashMap<Double, Integer> map = new HashMap<>();
-	// double[] values = dict.getValues();
-	// for(int i = 0; i < values.length; i++)
-	// map.put(values[i], i);
+	/**
+	 * Generate a CompressedMatrixBlock Object that contains a single uncompressed matrix block column group.
+	 * 
+	 * @param mb The matrix block to be contained in the uncompressed matrix block column,
+	 * @return a CompressedMatrixBlock
+	 */
+	public static CompressedMatrixBlock genUncompressedCompressedMatrixBlock(MatrixBlock mb) {
+		CompressedMatrixBlock ret = new CompressedMatrixBlock(mb.getNumRows(), mb.getNumColumns());
+		AColGroup cg = new ColGroupUncompressed(mb);
+		ret.allocateColGroup(cg);
+		ret.setNonZeros(mb.getNonZeros());
+		return ret;
+	}
 
-	// // recode data of all relevant DDC1 groups
-	// for(ColGroup grp : colGroups)
-	// if(grp.getNumCols() == 1 && grp instanceof ColGroupDDC1) {
-	// ColGroupDDC1 grpDDC1 = (ColGroupDDC1) grp;
-	// grpDDC1.recodeData(map);
-	// grpDDC1.setDictionary(dict);
-	// }
-	// }
+	/**
+	 * Method for constructing a compressed matrix out of an constant input.
+	 * 
+	 * Since the input is a constant value it is trivially compressable, therefore we skip the entire compression
+	 * planning and directly return a compressed constant matrix
+	 * 
+	 * @param numRows The number of Rows in the matrix
+	 * @param numCols The number of Columns in the matrix
+	 * @param value   The value contained in the matrix
+	 * @return The Compressed Constant matrix.
+	 */
+	public static CompressedMatrixBlock createConstant(int numRows, int numCols, double value) {
+		CompressedMatrixBlock block = new CompressedMatrixBlock(numRows, numCols);
+		AColGroup cg = ColGroupFactory.genColGroupConst(numCols, value);
+		block.allocateColGroup(cg);
+		block.recomputeNonZeros();
+		if(block.getNumRows() == 0 || block.getNumColumns() == 0) {
+			throw new DMLCompressionException("Invalid size of allocated constant compressed matrix block");
+		}
+		return block;
+	}
+
+	private Pair<MatrixBlock, CompressionStatistics> compressMatrix() {
+		// Check for redundant compression
+		if(mb instanceof CompressedMatrixBlock) {
+			LOG.info("MatrixBlock already compressed or is Empty");
+			return new ImmutablePair<>(mb, null);
+		}
+		else if(mb.isEmpty()) {
+			LOG.info("Empty input to compress, returning a compressed Matrix block with empty column group");
+			CompressedMatrixBlock ret = new CompressedMatrixBlock(mb.getNumRows(), mb.getNumColumns());
+			ColGroupEmpty cg = ColGroupEmpty.generate(mb.getNumColumns());
+			ret.allocateColGroup(cg);
+			ret.setNonZeros(0);
+			return new ImmutablePair<>(ret, null);
+		}
+
+		_stats.denseSize = MatrixBlock.estimateSizeInMemory(mb.getNumRows(), mb.getNumColumns(), 1.0);
+		_stats.originalSize = mb.getInMemorySize();
+
+		res = new CompressedMatrixBlock(mb); // copy metadata and allocate soft reference
+
+		looksLikeOneHot();
+
+		if(compressionGroups == null) {
+			classifyPhase();
+			if(compressionGroups == null)
+				return abortCompression();
+		}
+
+		transposePhase();
+		compressPhase();
+
+		finalizePhase();
+
+		if(res == null)
+			return abortCompression();
+
+		if(compSettings.isInSparkInstruction) {
+			// clear soft reference to uncompressed block in case of spark.
+			res.clearSoftReferenceToDecompressed();
+		}
+		return new ImmutablePair<>(res, _stats);
+	}
+
+	private void classifyPhase() {
+		CompressedSizeEstimator sizeEstimator = CompressedSizeEstimatorFactory.getSizeEstimator(mb, compSettings, k);
+		if(compSettings.transposed)
+			mb = sizeEstimator.getData();
+		compressionGroups = sizeEstimator.computeCompressedSizeInfos(k);
+
+		_stats.estimatedSizeCols = compressionGroups.memoryEstimate();
+		logPhase();
+
+		final double sizeToCompare = (costEstimator instanceof ComputationCostEstimator &&
+			((ComputationCostEstimator) costEstimator).isDense()) ? _stats.denseSize : _stats.originalSize;
+
+		final boolean isValidForComputeBasedCompression = isComputeBasedCompression() &&
+			(compSettings.minimumCompressionRatio != 1.0) ? _stats.estimatedSizeCols *
+				compSettings.minimumCompressionRatio < sizeToCompare : true;
+		final boolean isValidForMemoryBasedCompression = _stats.estimatedSizeCols *
+			compSettings.minimumCompressionRatio < sizeToCompare;
+
+		if(isValidForComputeBasedCompression || isValidForMemoryBasedCompression) {
+			final int nCols = compSettings.transposed ? mb.getNumRows() : mb.getNumColumns();
+			if(nCols > 1)
+				coCodePhase(sizeEstimator, costEstimator, sizeToCompare);
+			else
+				logPhase();
+		}
+		else {
+			LOG.info("Estimated Size of singleColGroups: " + _stats.estimatedSizeCols);
+			LOG.info("Original size                    : " + _stats.originalSize);
+		}
+	}
+
+	private boolean isComputeBasedCompression() {
+		return costEstimator instanceof ComputationCostEstimator;
+	}
+
+	private void coCodePhase(CompressedSizeEstimator sizeEstimator, ICostEstimate costEstimator, double sizeToCompare) {
+
+		compressionGroups = CoCoderFactory.findCoCodesByPartitioning(sizeEstimator, compressionGroups, k, costEstimator,
+			compSettings);
+
+		_stats.estimatedSizeCoCoded = compressionGroups.memoryEstimate();
+
+		logPhase();
+
+		// if cocode is estimated larger than uncompressed abort compression.
+		if(isComputeBasedCompression() &&
+			_stats.estimatedSizeCoCoded * compSettings.minimumCompressionRatio > sizeToCompare) {
+
+			compressionGroups = null;
+			LOG.info("Aborting compression because the cocoded size : " + _stats.estimatedSizeCoCoded);
+			LOG.info("Vs original size                              : " + _stats.originalSize);
+		}
+
+	}
+
+	private void looksLikeOneHot() {
+		final int numColumns = mb.getNumColumns();
+		final int numRows = mb.getNumRows();
+		final long nnz = mb.getNonZeros();
+		final int colGroupSize = 100;
+		if(nnz == numRows && numColumns != 1) {
+			boolean onlyOneValues = true;
+			LOG.debug("Looks like one hot encoded.");
+			if(mb.isInSparseFormat()) {
+				final SparseBlock sb = mb.getSparseBlock();
+				for(double v : sb.get(0).values()) {
+					onlyOneValues = v == 1.0;
+					if(!onlyOneValues) {
+						break;
+					}
+				}
+			}
+			else {
+				final double[] vals = mb.getDenseBlock().values(0);
+				for(int i = 0; i < Math.min(vals.length, 1000); i++) {
+					double v = vals[i];
+					onlyOneValues = v == 1.0 || v == 0.0;
+					if(!onlyOneValues) {
+						break;
+					}
+				}
+			}
+			if(onlyOneValues) {
+				List<CompressedSizeInfoColGroup> ng = new ArrayList<>(numColumns / colGroupSize + 1);
+				for(int i = 0; i < numColumns; i += colGroupSize) {
+					int[] columnIds = new int[Math.min(colGroupSize, numColumns - i)];
+					for(int j = 0; j < columnIds.length; j++)
+						columnIds[j] = i + j;
+					ng.add(new CompressedSizeInfoColGroup(columnIds, Math.min(numColumns, colGroupSize), numRows));
+				}
+				compressionGroups = new CompressedSizeInfo(ng);
+
+				LOG.debug("Concluded that it probably is one hot encoded skipping analysis");
+				// skipping two phases
+				phase += 2;
+			}
+		}
+	}
+
+	private void transposePhase() {
+		if(!compSettings.transposed) {
+			transposeHeuristics();
+			if(compSettings.transposed) {
+				boolean sparse = mb.isInSparseFormat();
+				mb = LibMatrixReorg.transpose(mb, new MatrixBlock(mb.getNumColumns(), mb.getNumRows(), sparse), k, true);
+				mb.evalSparseFormatInMemory();
+			}
+		}
+
+		logPhase();
+	}
+
+	private void transposeHeuristics() {
+		switch(compSettings.transposeInput) {
+			case "true":
+				compSettings.transposed = true;
+				break;
+			case "false":
+				compSettings.transposed = false;
+				break;
+			default:
+				if(mb.isInSparseFormat()) {
+					boolean haveManyColumns = mb.getNumColumns() > 10000;
+					boolean isNnzLowAndVerySparse = mb.getNonZeros() < 1000 && mb.getSparsity() < 0.4;
+					boolean isAboveRowNumbers = mb.getNumRows() > 500000;
+					boolean isAboveThreadToColumnRatio = compressionGroups.getNumberColGroups() > mb.getNumColumns() / 4;
+					compSettings.transposed = haveManyColumns || isNnzLowAndVerySparse ||
+						(isAboveRowNumbers && isAboveThreadToColumnRatio);
+				}
+				else
+					compSettings.transposed = false;
+		}
+	}
+
+	private void compressPhase() {
+		res.allocateColGroupList(ColGroupFactory.compressColGroups(mb, compressionGroups, compSettings, k));
+		_stats.compressedInitialSize = res.getInMemorySize();
+		logPhase();
+	}
+
+	private void finalizePhase() {
+
+		CLALibUtils.combineConstColumns(res);
+		res.cleanupBlock(true, true);
+
+		_stats.size = res.getInMemorySize();
+
+		final double ratio = _stats.getRatio();
+		final double denseRatio = _stats.getDenseRatio();
+		if(ratio < 1 && denseRatio < 100.0) {
+			LOG.info("--dense size:        " + _stats.denseSize);
+			LOG.info("--original size:     " + _stats.originalSize);
+			LOG.info("--compressed size:   " + _stats.size);
+			LOG.info("--compression ratio: " + ratio);
+			LOG.info("Abort block compression because compression ratio is less than 1.");
+			res = null;
+			setNextTimePhase(time.stop());
+			DMLCompressionStatistics.addCompressionTime(getLastTimePhase(), phase);
+			return;
+		}
+
+		_stats.setColGroupsCounts(res.getColGroups());
+
+		final long oldNNZ = mb.getNonZeros();
+		if(oldNNZ <= 0)
+			res.setNonZeros(oldNNZ);
+		else
+			res.recomputeNonZeros();
+
+		logPhase();
+
+	}
+
+	private Pair<MatrixBlock, CompressionStatistics> abortCompression() {
+		LOG.warn("Compression aborted at phase: " + phase);
+
+		if(compSettings.transposed)
+			LibMatrixReorg.transposeInPlace(mb, k);
+
+		return new ImmutablePair<>(mb, _stats);
+	}
+
+	private void logPhase() {
+		setNextTimePhase(time.stop());
+		DMLCompressionStatistics.addCompressionTime(getLastTimePhase(), phase);
+		if(LOG.isDebugEnabled()) {
+			if(compSettings.isInSparkInstruction) {
+				if(phase == 5)
+					LOG.debug(_stats);
+			}
+			else {
+				switch(phase) {
+					case 0:
+						LOG.debug("--compression phase " + phase + " Classify  : " + getLastTimePhase());
+						LOG.debug("--Individual Columns Estimated Compression: " + _stats.estimatedSizeCols);
+						break;
+					case 1:
+						LOG.debug("--compression phase " + phase + " Grouping  : " + getLastTimePhase());
+						LOG.debug("Grouping using: " + compSettings.columnPartitioner);
+						LOG.debug("Cost Calculated using: " + costEstimator);
+						LOG.debug("--Cocoded Columns estimated Compression:" + _stats.estimatedSizeCoCoded);
+						if(compressionGroups.getInfo().size() < 1000) {
+							LOG.debug("--Cocoded Columns estimated nr distinct:" + compressionGroups.getEstimatedDistinct());
+							LOG.debug("--Cocoded Columns nr columns           :" + compressionGroups.getNrColumnsString());
+						}
+						else {
+							LOG.debug(
+								"--CoCoded produce many columns but the first says:\n" + compressionGroups.getInfo().get(0));
+						}
+						break;
+					case 2:
+						LOG.debug("--compression phase " + phase + " Transpose : " + getLastTimePhase());
+						LOG.debug("Did transpose: " + compSettings.transposed);
+						break;
+					case 3:
+						LOG.debug("--compression phase " + phase + " Compress  : " + getLastTimePhase());
+						LOG.debug("--compression Hash collisions:" + "(" + DblArrayIntListHashMap.hashMissCount + ","
+							+ DoubleCountHashMap.hashMissCount + ")");
+						DblArrayIntListHashMap.hashMissCount = 0;
+						DoubleCountHashMap.hashMissCount = 0;
+						LOG.debug("--compressed initial actual size:" + _stats.compressedInitialSize);
+						break;
+					case 4:
+						LOG.debug("--num col groups: " + res.getColGroups().size());
+						LOG.debug("--compression phase " + phase + " Cleanup   : " + getLastTimePhase());
+						LOG.debug("--col groups types " + _stats.getGroupsTypesString());
+						LOG.debug("--col groups sizes " + _stats.getGroupsSizesString());
+						LOG.debug("--dense size:        " + _stats.denseSize);
+						LOG.debug("--original size:     " + _stats.originalSize);
+						LOG.debug("--compressed size:   " + _stats.size);
+						LOG.debug("--compression ratio: " + _stats.getRatio());
+						LOG.debug("--Dense       ratio: " + _stats.getDenseRatio());
+						if(compressionGroups.getInfo().size() < 1000) {
+							int[] lengths = new int[res.getColGroups().size()];
+							int i = 0;
+							for(AColGroup colGroup : res.getColGroups())
+								lengths[i++] = colGroup.getNumValues();
+
+							LOG.debug("--compressed colGroup dictionary sizes: " + Arrays.toString(lengths));
+							LOG.debug(
+								"--compressed colGroup nr columns      : " + constructNrColumnString(res.getColGroups()));
+						}
+						if(LOG.isTraceEnabled()) {
+							for(AColGroup colGroup : res.getColGroups()) {
+								if(colGroup.estimateInMemorySize() < 1000)
+									LOG.trace(colGroup);
+								else {
+									LOG.trace("--colGroups type       : " + colGroup.getClass().getSimpleName() + " size: "
+										+ colGroup.estimateInMemorySize()
+										+ ((colGroup instanceof AColGroupValue) ? "  numValues :"
+											+ ((AColGroupValue) colGroup).getNumValues() : "")
+										+ "  colIndexes : " + Arrays.toString(colGroup.getColIndices()));
+								}
+							}
+						}
+					default:
+				}
+			}
+		}
+		phase++;
+	}
+
+	private void setNextTimePhase(double time) {
+		lastPhase = time;
+	}
+
+	private double getLastTimePhase() {
+		return lastPhase;
+	}
+
+	private static String constructNrColumnString(List<AColGroup> cg) {
+		StringBuilder sb = new StringBuilder();
+		sb.append("[");
+		sb.append(cg.get(0).getNumCols());
+		for(int id = 1; id < cg.size(); id++)
+			sb.append(", " + cg.get(id).getNumCols());
+		sb.append("]");
+		return sb.toString();
+	}
 }

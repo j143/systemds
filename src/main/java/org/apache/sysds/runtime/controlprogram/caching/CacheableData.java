@@ -38,6 +38,7 @@ import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.runtime.DMLRuntimeException;
+import org.apache.sysds.runtime.compress.CompressedMatrixBlock;
 import org.apache.sysds.runtime.controlprogram.caching.LazyWriteBuffer.RPolicy;
 import org.apache.sysds.runtime.controlprogram.federated.FederationMap;
 import org.apache.sysds.runtime.controlprogram.federated.FederationMap.FType;
@@ -178,6 +179,10 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 	protected MetaData _metaData = null;
 	
 	protected FederationMap _fedMapping = null;
+
+	protected boolean _compressed = false;
+
+	protected long _compressedSize = -1;
 	
 	/** The name of HDFS file in which the data is backed up. */
 	protected String _hdfsFileName = null; // file name and path
@@ -242,8 +247,11 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 		_hdfsFileExists = that._hdfsFileExists; 
 		_gpuObjects = that._gpuObjects;
 		_privacyConstraint = that._privacyConstraint;
+		_dirtyFlag = that._dirtyFlag;
+		_compressed = that._compressed;
+		_compressedSize = that._compressedSize;
+		_fedMapping = that._fedMapping;
 	}
-
 	
 	/**
 	 * Enables or disables the cleanup of the associated 
@@ -319,7 +327,20 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 	public void setMetaData(MetaData md) {
 		_metaData = md;
 	}
+
+	public void setCompressedSize(long size){
+		_compressed = true;
+		_compressedSize = size;
+	}
+
+	public boolean isCompressed(){
+		return _compressed;
+	}
 	
+	public long getCompressedSize(){
+		return _compressedSize;
+	}
+
 	@Override
 	public MetaData getMetaData() {
 		return _metaData;
@@ -340,6 +361,10 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 
 	public long getNumColumns() {
 		return getDataCharacteristics().getCols();
+	}
+	
+	public long getBlocksize() {
+		return getDataCharacteristics().getBlocksize();
 	}
 	
 	public abstract void refreshMetaData();
@@ -373,7 +398,11 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 	}
 	
 	public boolean isFederated(FType type) {
-		return isFederated() && _fedMapping.getType().isType(type);
+		return isFederated() && (type == null || _fedMapping.getType().isType(type));
+	}
+	
+	public boolean isFederatedExcept(FType type) {
+		return isFederated() && !isFederated(type);
 	}
 	
 	/**
@@ -435,6 +464,10 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 		GPUObject old = _gpuObjects.put(gCtx, gObj);
 		if (old != null)
 				throw new DMLRuntimeException("GPU : Inconsistent internal state - this CacheableData already has a GPUObject assigned to the current GPUContext (" + gCtx + ")");
+	}
+	
+	public synchronized void removeGPUObject(GPUContext gCtx) {
+		_gpuObjects.remove(gCtx);
 	}
 	
 	// *********************************************
@@ -514,7 +547,7 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 					if( DMLScript.STATISTICS )
 						CacheStatistics.incrementLinHits();
 				}
-				else if( isFederated() ) {
+				else if( isFederatedExcept(FType.BROADCAST) ) {
 					_data = readBlobFromFederated(_fedMapping);
 
 					//mark for initial local write despite read operation
@@ -589,6 +622,10 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 				Statistics.addCPMemObject(System.identityHashCode(this), getDataSize());
 		}
 		
+		if(newData instanceof CompressedMatrixBlock) {
+			setCompressedSize(newData.getInMemorySize());
+		}
+
 		return ret;
 	}
 	
@@ -721,8 +758,12 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 			_bcHandle.setBackReference(null);
 		if( _gpuObjects != null ) {
 			for (GPUObject gObj : _gpuObjects.values())
-				if (gObj != null)
+				if (gObj != null) {
 					gObj.clearData(null, DMLScript.EAGER_CUDA_FREE);
+					if (gObj.isLinCached())
+						// set rmVarPending which helps detecting liveness
+						gObj.setrmVarPending(true);
+				}
 		}
 		
 		//clear federated matrix
@@ -748,7 +789,6 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 	 */
 	public synchronized void exportData( int replication ) {
 		exportData(_hdfsFileName, null, replication, null);
-		_hdfsFileExists = true;
 	}
 
 	public synchronized void exportData(String fName, String outputFormat) {
@@ -757,10 +797,6 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 
 	public synchronized void exportData(String fName, String outputFormat, FileFormatProperties formatProperties) {
 		exportData(fName, outputFormat, -1, formatProperties);
-	}
-	
-	public synchronized void exportData (String fName, String outputFormat, int replication, FileFormatProperties formatProperties) {
-		exportData(fName, outputFormat, replication, formatProperties, null);
 	}
 	
 	/**
@@ -778,9 +814,8 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 	 * @param outputFormat format
 	 * @param replication ?
 	 * @param formatProperties file format properties
-	 * @param opcode instruction opcode if available
 	 */
-	public synchronized void exportData (String fName, String outputFormat, int replication, FileFormatProperties formatProperties, String opcode) {
+	public synchronized void exportData (String fName, String outputFormat, int replication, FileFormatProperties formatProperties) {
 		if( LOG.isTraceEnabled() )
 			LOG.trace("Export data "+hashCode()+" "+fName);
 		long t0 = DMLScript.STATISTICS ? System.nanoTime() : 0;
@@ -810,12 +845,17 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 			setHDFSFileExists(true);
 		
 		//check for common file scheme (otherwise no copy/rename)
+		int blen = (formatProperties == null) ?
+			ConfigurationManager.getBlocksize() : formatProperties.getBlocksize();
 		boolean eqScheme = IOUtilFunctions.isSameFileScheme(
 			new Path(_hdfsFileName), new Path(fName));
+		boolean eqFormat = isEqualOutputFormat(outputFormat);
+		boolean eqBlksize = (getBlocksize() != blen)
+			&& (outputFormat == null || outputFormat.equals("binary"));
 		
 		//actual export (note: no direct transfer of local copy in order to ensure blocking (and hence, parallelism))
 		if( isDirty() || !eqScheme || isFederated() ||
-			(pWrite && !isEqualOutputFormat(outputFormat)) ) 
+			(pWrite && (!eqFormat | !eqBlksize)) )
 		{
 			// CASE 1: dirty in-mem matrix or pWrite w/ different format (write matrix to fname; load into memory if evicted)
 			// a) get the matrix
@@ -825,25 +865,23 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 			{
 				//read data from HDFS if required (never read before), this applies only to pWrite w/ different output formats
 				//note: for large rdd outputs, we compile dedicated writespinstructions (no need to handle this here) 
-				try
-				{
+				try {
 					if( getRDDHandle()==null || getRDDHandle().allowsShortCircuitRead() )
 						_data = readBlobFromHDFS( _hdfsFileName );
 					else if( getRDDHandle() != null )
 						_data = readBlobFromRDD( getRDDHandle(), new MutableBoolean() );
 					else if(!federatedWrite)
 						_data = readBlobFromFederated( getFedMapping() );
-					
 					setDirty(false);
+					refreshMetaData(); //e.g., after unknown csv read
 				}
 				catch (IOException e) {
 					throw new DMLRuntimeException("Reading of " + _hdfsFileName + " ("+hashCode()+") failed.", e);
 				}
 			}
 			//get object from cache
-			if(!federatedWrite){
-
-				if(  _data == null )
+			if(!federatedWrite) {
+				if( _data == null )
 					getCache();
 				acquire( false, _data==null ); //incl. read matrix if evicted
 			}
@@ -903,7 +941,8 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 			//CASE 4: data already in hdfs (do nothing, no need for export)
 			LOG.trace(this.getDebugName() + ": Skip export to hdfs since data already exists.");
 		}
-		  
+		
+		_hdfsFileExists = true;
 		if( DMLScript.STATISTICS ){
 			long t1 = System.nanoTime();
 			CacheStatistics.incrementExportTime(t1-t0);
@@ -1019,7 +1058,8 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 
 	// Federated read
 	protected T readBlobFromFederated(FederationMap fedMap) throws IOException {
-		LOG.info("Pulling data from federated sites");
+		if( LOG.isDebugEnabled() ) //common if instructions keep federated outputs
+			LOG.debug("Pulling data from federated sites");
 		MetaDataFormat iimd = (MetaDataFormat) _metaData;
 		DataCharacteristics dc = iimd.getDataCharacteristics();
 		return readBlobFromFederated(fedMap, dc.getDims());
@@ -1040,7 +1080,7 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 	
 	protected void writeMetaData (String filePathAndName, String outputFormat, FileFormatProperties formatProperties)
 		throws IOException
-	{		
+	{	
 		MetaDataFormat iimd = (MetaDataFormat) _metaData;
 	
 		if (iimd == null)
@@ -1051,13 +1091,15 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 		if ( fmt != FileFormat.MM ) {
 			// Get the dimension information from the metadata stored within MatrixObject
 			DataCharacteristics dc = iimd.getDataCharacteristics();
+			if( formatProperties != null && formatProperties.knownBlocksize() )
+				dc.setBlocksize(formatProperties.getBlocksize());
 			
 			// when outputFormat is binaryblock, make sure that matrixCharacteristics has correct blocking dimensions
 			// note: this is only required if singlenode (due to binarycell default) 
 			if ( fmt == FileFormat.BINARY && DMLScript.getGlobalExecMode() == ExecMode.SINGLE_NODE
 				&& dc.getBlocksize() != ConfigurationManager.getBlocksize() )
 			{
-				dc = new MatrixCharacteristics(dc.getRows(), dc.getCols(), ConfigurationManager.getBlocksize(), dc.getNonZeros());
+				dc = new MatrixCharacteristics(dc.getRows(), dc.getCols(), dc.getBlocksize(), dc.getNonZeros());
 			}
 			
 			//write the actual meta data file
@@ -1197,6 +1239,10 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 	
 	protected boolean isModify() {
 		return (_cacheStatus == CacheStatus.MODIFY);
+	}
+	
+	public boolean isPendingRDDOps() {
+		return isEmpty(true) && _data == null && (_rddHandle != null && _rddHandle.hasBackReference());
 	}
 	
 	protected void setEmpty() {
@@ -1437,10 +1483,13 @@ public abstract class CacheableData<T extends CacheBlock> extends Data
 				str.append("null, null");
 			}
 		} catch (Exception ex) {
-			LOG.error(ex);
+			throw new DMLRuntimeException(ex);
 		}
 		str.append(", ");
 		str.append(isDirty() ? "dirty" : "not-dirty");
+
+		if(isCompressed())
+			str.append( ", Compressed " + _compressedSize );
 
 		return str.toString();
 	}

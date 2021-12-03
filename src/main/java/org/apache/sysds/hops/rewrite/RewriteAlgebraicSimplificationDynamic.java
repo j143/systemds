@@ -26,6 +26,20 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 
+import org.apache.sysds.common.Types.AggOp;
+import org.apache.sysds.common.Types.DataType;
+import org.apache.sysds.common.Types.Direction;
+import org.apache.sysds.common.Types.OpOp1;
+import org.apache.sysds.common.Types.OpOp2;
+import org.apache.sysds.common.Types.OpOp3;
+import org.apache.sysds.common.Types.OpOp4;
+import org.apache.sysds.common.Types.OpOpDG;
+import org.apache.sysds.common.Types.OpOpN;
+import org.apache.sysds.common.Types.ParamBuiltinOp;
+import org.apache.sysds.common.Types.ReOrgOp;
+import org.apache.sysds.common.Types.ValueType;
+import org.apache.sysds.conf.ConfigurationManager;
+import org.apache.sysds.conf.DMLConfig;
 import org.apache.sysds.hops.AggBinaryOp;
 import org.apache.sysds.hops.AggUnaryOp;
 import org.apache.sysds.hops.BinaryOp;
@@ -41,20 +55,8 @@ import org.apache.sysds.hops.QuaternaryOp;
 import org.apache.sysds.hops.ReorgOp;
 import org.apache.sysds.hops.TernaryOp;
 import org.apache.sysds.hops.UnaryOp;
-import org.apache.sysds.common.Types.AggOp;
-import org.apache.sysds.common.Types.Direction;
-import org.apache.sysds.common.Types.OpOp1;
-import org.apache.sysds.common.Types.OpOp2;
-import org.apache.sysds.common.Types.OpOp3;
-import org.apache.sysds.common.Types.OpOp4;
-import org.apache.sysds.common.Types.OpOpDG;
-import org.apache.sysds.common.Types.OpOpN;
-import org.apache.sysds.common.Types.ParamBuiltinOp;
-import org.apache.sysds.common.Types.ReOrgOp;
 import org.apache.sysds.lops.MapMultChain.ChainType;
 import org.apache.sysds.parser.DataExpression;
-import org.apache.sysds.common.Types.DataType;
-import org.apache.sysds.common.Types.ValueType;
 
 /**
  * Rule: Algebraic Simplifications. Simplifies binary expressions
@@ -107,7 +109,6 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 	public Hop rewriteHopDAG(Hop root, ProgramRewriteStatus state) {
 		if( root == null )
 			return root;
-		
 		//one pass rewrite-descend (rewrite created pattern)
 		rule_AlgebraicSimplification( root, false );
 		
@@ -137,7 +138,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 		//recursively process children
 		for( int i=0; i<hop.getInput().size(); i++)
 		{
-			Hop hi = hop.getInput().get(i);
+			Hop hi = hop.getInput(i);
 			
 			//process childs recursively first (to allow roll-up)
 			if( descendFirst )
@@ -154,16 +155,19 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 			hi = removeUnnecessaryReorgOperation(hop, hi, i); //e.g., matrix(X) -> X, if dims(in)==dims(out); r(X)->X, if 1x1 dims
 			hi = removeUnnecessaryOuterProduct(hop, hi, i);   //e.g., X*(Y%*%matrix(1,...) -> X*Y, if Y col vector
 			hi = removeUnnecessaryIfElseOperation(hop, hi, i);//e.g., ifelse(E, A, B) -> A, if E==TRUE or nnz(E)==length(E)
-			hi = removeUnnecessaryAppendTSMM(hop, hi, i);     //e.g., X = t(rbind(A,B,C)) %*% rbind(A,B,C) -> t(A)%*%A + t(B)%*%B + t(C)%*%C
+			if(ConfigurationManager.getDMLConfig().getBooleanValue(DMLConfig.COMPILERASSISTED_RW))
+				hi = removeUnnecessaryAppendTSMM(hop, hi, i);     //e.g., X = t(rbind(A,B,C)) %*% rbind(A,B,C) -> t(A)%*%A + t(B)%*%B + t(C)%*%C
 			if(OptimizerUtils.ALLOW_OPERATOR_FUSION)
 				hi = fuseDatagenAndReorgOperation(hop, hi, i);    //e.g., t(rand(rows=10,cols=1)) -> rand(rows=1,cols=10), if one dim=1
-			hi = simplifyColwiseAggregate(hop, hi, i);        //e.g., colsums(X) -> sum(X) or X, if col/row vector
-			hi = simplifyRowwiseAggregate(hop, hi, i);        //e.g., rowsums(X) -> sum(X) or X, if row/col vector
+			hi = simplifyColwiseAggregate(hop, hi, i);        //e.g., colSums(X) -> sum(X) or X, if col/row vector
+			hi = simplifyRowwiseAggregate(hop, hi, i);        //e.g., rowSums(X) -> sum(X) or X, if row/col vector
+			hi = simplifyMeanAggregation(hop, hi, i);         //e.g., colSums(X)/N -> colMeans(X) if N = nrow(X)
 			hi = simplifyColSumsMVMult(hop, hi, i);           //e.g., colSums(X*Y) -> t(Y) %*% X, if Y col vector
 			hi = simplifyRowSumsMVMult(hop, hi, i);           //e.g., rowSums(X*Y) -> X %*% t(Y), if Y row vector
 			hi = simplifyUnnecessaryAggregate(hop, hi, i);    //e.g., sum(X) -> as.scalar(X), if 1x1 dims
 			hi = simplifyEmptyAggregate(hop, hi, i);          //e.g., sum(X) -> 0, if nnz(X)==0
-			hi = simplifyEmptyUnaryOperation(hop, hi, i);     //e.g., round(X) -> matrix(0,nrow(X),ncol(X)), if nnz(X)==0			
+			hi = simplifyEmptyColMeans(hop, hi, i);           //e.g., colMeans(X-colMeans(X)) if none or scaling by scalars/col-vectors
+			hi = simplifyEmptyUnaryOperation(hop, hi, i);     //e.g., round(X) -> matrix(0,nrow(X),ncol(X)), if nnz(X)==0
 			hi = simplifyEmptyReorgOperation(hop, hi, i);     //e.g., t(X) -> matrix(0, ncol(X), nrow(X)) 
 			hi = simplifyEmptySortOperation(hop, hi, i);      //e.g., order(X) -> seq(1, nrow(X)), if nnz(X)==0 
 			hi = simplifyEmptyMatrixMult(hop, hi, i);         //e.g., X%*%Y -> matrix(0,...), if nnz(Y)==0 | X if Y==matrix(1,1,1)
@@ -192,6 +196,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 			hi = simplifyNnzComputation(hop, hi, i);          //e.g., sum(ppred(X,0,"!=")) -> literal(nnz(X)), if nnz known
 			hi = simplifyNrowNcolComputation(hop, hi, i);     //e.g., nrow(X) -> literal(nrow(X)), if nrow known to remove data dependency
 			hi = simplifyTableSeqExpand(hop, hi, i);          //e.g., table(seq(1,nrow(v)), v, nrow(v), m) -> rexpand(v, max=m, dir=row, ignore=false, cast=true)
+			hi = simplyfyMMCBindZeroVector(hop, hi, i);       //e.g.. cbind((X %*% Y), matrix (0, nrow(X), 1)) -> X %*% (cbind(Y, matrix(0, nrow(Y), 1))) if nRows of x is larger than nCols of y
 			if( OptimizerUtils.ALLOW_OPERATOR_FUSION )
 				foldMultipleMinMaxOperations(hi);             //e.g., min(X,min(min(3,7),Y)) -> min(X,3,7,Y)
 			
@@ -218,8 +223,8 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 				HopRewriteUtils.cleanupUnreferenced(hi, input);
 				hi = hnew;
 				
-				LOG.debug("Applied removeEmptyRightIndexing");
-			}			
+				LOG.debug("Applied removeEmptyRightIndexing (line "+hi.getBeginLine()+")");
+			}
 		}
 		
 		return hi;
@@ -234,7 +239,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 			HopRewriteUtils.cleanupUnreferenced(hi);
 			hi = input;
 			
-			LOG.debug("Applied removeUnnecessaryRightIndexing");
+			LOG.debug("Applied removeUnnecessaryRightIndexing  (line "+hi.getBeginLine()+")");
 		}
 		
 		return hi;
@@ -719,6 +724,30 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 		return hi;
 	}
 	
+	private static Hop simplifyMeanAggregation( Hop parent, Hop hi, int pos ) {
+		// colSums(X)/N -> colMeans(X), if N = nrow(X), all directions but different vals
+		if( HopRewriteUtils.isBinary(hi, OpOp2.DIV)
+			&& HopRewriteUtils.isAggUnaryOp(hi.getInput(0), AggOp.SUM)
+			&& hi.getInput(0).getParent().size()==1 //prevent repeated scans
+			&& hi.getInput(1).getDataType().isScalar())
+		{
+			AggUnaryOp agg = (AggUnaryOp)hi.getInput(0);
+			Hop in = agg.getInput(0);
+			Hop N = hi.getInput(1);
+			if( (agg.getDirection().isRow() && HopRewriteUtils.isSizeExpressionOf(N, in, false))
+				|| (agg.getDirection().isCol() && HopRewriteUtils.isSizeExpressionOf(N, in, true)) )
+			{
+				HopRewriteUtils.replaceChildReference(parent, hi, agg, pos);
+				HopRewriteUtils.cleanupUnreferenced(hi, N);
+				agg.setOp(AggOp.MEAN);
+				hi = agg;
+				LOG.debug("Applied simplifyMeanAggregation");
+			}
+		}
+		
+		return hi;
+	}
+	
 	private static Hop simplifyColSumsMVMult( Hop parent, Hop hi, int pos ) 
 	{
 		//colSums(X*Y) -> t(Y) %*% X, if Y col vector; additional transpose later
@@ -818,7 +847,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 	
 	private static Hop simplifyEmptyAggregate(Hop parent, Hop hi, int pos) 
 	{
-		if( hi instanceof AggUnaryOp  ) 
+		if( hi instanceof AggUnaryOp )
 		{
 			AggUnaryOp uhi = (AggUnaryOp)hi;
 			Hop input = uhi.getInput().get(0);
@@ -845,6 +874,30 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 		return hi;
 	}
 	
+	private static Hop simplifyEmptyColMeans(Hop parent, Hop hi, int pos) 
+	{
+		if( hi.dimsKnown() && HopRewriteUtils.isAggUnaryOp(hi, AggOp.MEAN, Direction.Col) ) {
+			Hop in = hi.getInput(0);
+			//colMeans(X-colMeans(X)) without scaling
+			boolean apply = HopRewriteUtils.isBinary(in, OpOp2.MINUS)
+				&& HopRewriteUtils.isAggUnaryOp(in.getInput(1), AggOp.MEAN, Direction.Col)
+				&& in.getInput(0) == in.getInput(1).getInput(0); //requires CSE
+			//colMeans((X-colMeans(X))/colSds(X)) if scaling by scalars/col-vectors
+			apply = apply || (HopRewriteUtils.isBinary(in, OpOp2.DIV, OpOp2.MULT)
+				&& in.getInput(1).getDim1()==1 //row vector
+				&& HopRewriteUtils.isBinary(in.getInput(0), OpOp2.MINUS)
+				&& HopRewriteUtils.isAggUnaryOp(in.getInput(0).getInput(1), AggOp.MEAN, Direction.Col)
+				&& in.getInput(0).getInput(0) == in.getInput(0).getInput(1).getInput(0));
+			if( apply ) {
+				Hop hnew = HopRewriteUtils.createDataGenOp(hi, hi, 0); //empty
+				HopRewriteUtils.replaceChildReference(parent, hi, hnew, pos);
+				hi = hnew;
+				LOG.debug("Applied simplifyEmptyColMeans");
+			}
+		}
+		return hi;
+	}
+	
 	private static Hop simplifyEmptyUnaryOperation(Hop parent, Hop hi, int pos) 
 	{
 		if( hi instanceof UnaryOp  ) 
@@ -863,7 +916,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 					
 					LOG.debug("Applied simplifyEmptyUnaryOperation");
 				}
-			}			
+			}
 		}
 		
 		return hi;
@@ -2492,7 +2545,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 				hi = minus;
 				
 				LOG.debug("Applied reorderMinusMatrixMult (line "+hi.getBeginLine()+").");
-			}	
+			}
 		}
 		
 		return hi;
@@ -2640,7 +2693,7 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 	{
 		//pattern: table(seq(1,nrow(v)), v, nrow(v), m) -> rexpand(v, max=m, dir=row, ignore=false, cast=true)
 		//note: this rewrite supports both left/right sequence 
-		if(    hi instanceof TernaryOp && hi.getInput().size()==5 //table without weights 
+		if(    hi instanceof TernaryOp && hi.getInput().size()==6 //table without weights 
 			&& HopRewriteUtils.isLiteralOfValue(hi.getInput().get(2), 1) ) //i.e., weight of 1
 		{
 			Hop first = hi.getInput().get(0);
@@ -2741,6 +2794,34 @@ public class RewriteAlgebraicSimplificationDynamic extends HopRewriteRule
 			}
 		}
 		
+		return hi;
+	}
+
+	private static Hop simplyfyMMCBindZeroVector(Hop parent, Hop hi, int pos) {
+
+		// cbind((X %*% Y), matrix(0, nrow(X), 1)) ->
+		// X %*% (cbind(Y, matrix(0, nrow(Y), 1)))
+		// if nRows of x is larger than nRows of y
+		// rewrite used in MLogReg first level loop.
+
+		if(HopRewriteUtils.isBinary(hi, OpOp2.CBIND) && HopRewriteUtils.isMatrixMultiply(hi.getInput(0)) &&
+			HopRewriteUtils.isDataGenOpWithConstantValue(hi.getInput(1), 0) && hi.getInput(0).getInput(0).dimsKnown() &&
+			hi.getInput(0).getInput(1).dimsKnown()) {
+			final Hop y = hi.getInput(0).getInput(1);
+			final Hop x = hi.getInput(0).getInput(0);
+			final long m = x.getDim1(); // number of rows in output or X
+			final long n = y.getDim1(); // number of rows in Y or common dimension
+			if(m > n * 2) {
+				final Hop oldGen = hi.getInput(1);
+				final Hop newGen = HopRewriteUtils.createDataGenOp(y, oldGen, 0);
+				final Hop newCBind = HopRewriteUtils.createBinary(y, newGen, OpOp2.CBIND);
+				final Hop newMM = HopRewriteUtils.createMatrixMultiply(x, newCBind);
+
+				HopRewriteUtils.replaceChildReference(parent, hi, newMM, pos);
+				LOG.debug("Applied MMCBind Zero algebraic simplification (line " + hi.getBeginLine() + ").");
+				return newMM;
+			}
+		}
 		return hi;
 	}
 }

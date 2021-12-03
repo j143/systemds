@@ -36,6 +36,7 @@ import org.apache.sysds.runtime.controlprogram.caching.FrameObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysds.runtime.controlprogram.caching.TensorObject;
+import org.apache.sysds.runtime.controlprogram.federated.FederationMap.FType;
 import org.apache.sysds.runtime.data.TensorBlock;
 import org.apache.sysds.runtime.instructions.Instruction;
 import org.apache.sysds.runtime.instructions.cp.CPOperand;
@@ -43,9 +44,11 @@ import org.apache.sysds.runtime.instructions.cp.Data;
 import org.apache.sysds.runtime.instructions.cp.ListObject;
 import org.apache.sysds.runtime.instructions.cp.ScalarObject;
 import org.apache.sysds.runtime.instructions.cp.ScalarObjectFactory;
+import org.apache.sysds.runtime.instructions.gpu.context.CSRPointer;
 import org.apache.sysds.runtime.instructions.gpu.context.GPUContext;
 import org.apache.sysds.runtime.instructions.gpu.context.GPUObject;
 import org.apache.sysds.runtime.lineage.Lineage;
+import org.apache.sysds.runtime.lineage.LineageDebugger;
 import org.apache.sysds.runtime.lineage.LineageItem;
 import org.apache.sysds.runtime.matrix.data.FrameBlock;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
@@ -302,6 +305,10 @@ public class ExecutionContext {
 	public MatrixBlock getMatrixInput(String varName) {
 		return getMatrixObject(varName).acquireRead();
 	}
+	
+	public MatrixBlock getMatrixInput(CPOperand input) {
+		return getMatrixObject(input.getName()).acquireRead();
+	}
 
 	/**
 	 * Pins a matrix variable into memory and returns the internal matrix block.
@@ -366,7 +373,7 @@ public class ExecutionContext {
 	public Pair<MatrixObject, Boolean> getSparseMatrixOutputForGPUInstruction(String varName, long numRows, long numCols, long nnz) {
 		MatrixObject mo = allocateGPUMatrixObject(varName, numRows, numCols);
 		mo.getDataCharacteristics().setNonZeros(nnz);
-				boolean allocated = mo.getGPUObject(getGPUContext(0)).acquireDeviceModifySparse();
+		boolean allocated = mo.getGPUObject(getGPUContext(0)).acquireDeviceModifySparse();
 		return new Pair<>(mo, allocated);
 	}
 
@@ -405,15 +412,21 @@ public class ExecutionContext {
 		mo.getGPUObject(getGPUContext(0)).addWriteLock();
 		return mo;
 	}
-
-	public long getGPUPointerAddress(MatrixObject obj) {
-
-			if(obj.getGPUObject(getGPUContext(0)) == null)
+	
+	public long getGPUDensePointerAddress(MatrixObject obj) {
+		if(obj.getGPUObject(getGPUContext(0)) == null)
 				return 0;
 			else
-				return obj.getGPUObject(getGPUContext(0)).getPointerAddress();
+				return obj.getGPUObject(getGPUContext(0)).getDensePointerAddress();
 	}
-
+	
+	public CSRPointer getGPUSparsePointerAddress(MatrixObject obj) {
+		if(obj.getGPUObject(getGPUContext(0)) == null)
+			throw new RuntimeException("No CSRPointer for MatrixObject " + obj.toString());
+		else
+			return obj.getGPUObject(getGPUContext(0)).getJcudaSparseMatrixPtr();
+	}
+	
 	public MatrixObject getMatrixInputForGPUInstruction(String varName, String opcode) {
 		GPUContext gCtx = getGPUContext(0);
 		MatrixObject mo = getMatrixObject(varName);
@@ -593,6 +606,25 @@ public class ExecutionContext {
 		return ret;
 	}
 
+	public static MatrixObject createMatrixObject(DataCharacteristics dc) {
+		MatrixObject ret = new MatrixObject(Types.ValueType.FP64,
+			OptimizerUtils.getUniqueTempFileName());
+		ret.setMetaData(new MetaDataFormat(new MatrixCharacteristics(
+			dc.getRows(), dc.getCols()), FileFormat.BINARY));
+		ret.getMetaData().getDataCharacteristics()
+			.setBlocksize(ConfigurationManager.getBlocksize());
+		return ret;
+	}
+
+	public static FrameObject createFrameObject(DataCharacteristics dc) {
+		FrameObject ret = new FrameObject(OptimizerUtils.getUniqueTempFileName());
+		ret.setMetaData(new MetaDataFormat(new MatrixCharacteristics(
+			dc.getRows(), dc.getCols()), FileFormat.BINARY));
+		ret.getMetaData().getDataCharacteristics()
+			.setBlocksize(ConfigurationManager.getBlocksize());
+		return ret;
+	}
+
 	public static FrameObject createFrameObject(FrameBlock fb) {
 		FrameObject ret = new FrameObject(OptimizerUtils.getUniqueTempFileName());
 		ret.acquireModify(fb);
@@ -756,8 +788,7 @@ public class ExecutionContext {
 			cleanupCacheableData( (CacheableData<?>)dat );
 		else if( dat instanceof ListObject )
 			for( Data dat2 : ((ListObject)dat).getData() )
-				if( dat2 instanceof CacheableData<?> )
-					cleanupCacheableData( (CacheableData<?>)dat2 );
+				cleanupDataObject(dat2);
 	}
 	
 	public void cleanupCacheableData(CacheableData<?> mo) {
@@ -782,13 +813,34 @@ public class ExecutionContext {
 			throw new DMLRuntimeException(ex);
 		}
 	}
+	
+	public boolean isFederated(CPOperand input) {
+		Data data = getVariable(input);
+		if(data instanceof CacheableData && ((CacheableData<?>) data).isFederated())
+			return true;
+		return false;
+	}
+	
+	public boolean isFederated(CPOperand input, FType type) {
+		Data data = getVariable(input);
+		if(data instanceof CacheableData && ((CacheableData<?>) data).isFederated(type))
+			return true;
+		return false;
+	}
 
 	public void traceLineage(Instruction inst) {
 		if( _lineage == null )
 			throw new DMLRuntimeException("Lineage Trace unavailable.");
+		// TODO bra: store all newly created lis in active list
 		_lineage.trace(inst, this);
 	}
-
+	
+	public void maintainLineageDebuggerInfo(Instruction inst) {
+		if( _lineage == null )
+			throw new DMLRuntimeException("Lineage Trace unavailable.");
+		LineageDebugger.maintainSpecialValueBits(_lineage, inst, this);
+	}
+	
 	public LineageItem getLineageItem(CPOperand input) {
 		if( _lineage == null )
 			throw new DMLRuntimeException("Lineage Trace unavailable.");

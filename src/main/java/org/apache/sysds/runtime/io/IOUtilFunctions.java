@@ -93,7 +93,7 @@ public class IOUtilFunctions
 		try{
 			return FileSystem.get(conf);
 		} catch(NoClassDefFoundError err) {
-			throw new IOException(err.getMessage());
+			throw new IOException(err.getMessage(), err);
 		}
 	}
 	
@@ -101,7 +101,7 @@ public class IOUtilFunctions
 		try {
 			return FileSystem.get(fname.toUri(), conf);
 		} catch(NoClassDefFoundError err) {
-			throw new IOException(err.getMessage());
+			throw new IOException(err.getMessage(), err);
 		}
 	}
 	
@@ -180,6 +180,7 @@ public class IOUtilFunctions
 	{
 		//split by whole separator required for multi-character delimiters, preserve
 		//all tokens required for empty cells and in order to keep cell alignment
+	
 		return StringUtils.splitByWholeSeparatorPreserveAllTokens(str, delim);
 	}
 	
@@ -281,7 +282,7 @@ public class IOUtilFunctions
 			// slice out token and advance position
 			to = (to >= 0) ? to : len;
 			curString = str.substring(from, to);
-			tokens[pos++] = (naStrings.contains(curString)) ? null: curString;
+			tokens[pos++] = naStrings!= null ? ((naStrings.contains(curString)) ? null: curString): curString;
 			from = to + delim.length();
 		}
 		
@@ -357,7 +358,6 @@ public class IOUtilFunctions
 		return FileFormatPropertiesMM.parse(header[0]);
 	}
 	
-	@SuppressWarnings("resource")
 	public static String[] readMatrixMarketHeader(String filename) {
 		String[] retVal = new String[2];
 		retVal[0] = new String("");
@@ -540,7 +540,7 @@ public class IOUtilFunctions
 		//listStatus call returns all files with the given directory as prefix, which
 		//includes the mtd file which needs to be ignored accordingly.
 		
-		if( fs.isDirectory(file) 
+		if( fs.getFileStatus(file).isDirectory() 
 			|| IOUtilFunctions.isObjectStoreFileScheme(file) )
 		{
 			LinkedList<Path> tmp = new LinkedList<>();
@@ -555,6 +555,26 @@ public class IOUtilFunctions
 			ret = new Path[]{ file };
 		}
 		
+		return ret;
+	}
+	
+	public static Path[] getMetadataFilePaths( FileSystem fs, Path file ) 
+		throws IOException
+	{
+		Path[] ret = null;
+		if( fs.getFileStatus(file).isDirectory()
+			|| IOUtilFunctions.isObjectStoreFileScheme(file) )
+		{
+			LinkedList<Path> tmp = new LinkedList<>();
+			FileStatus[] dStatus = fs.listStatus(file);
+			for( FileStatus fdStatus : dStatus )
+				if( fdStatus.getPath().toString().endsWith(".mtd") ) //mtd file
+					tmp.add(fdStatus.getPath());
+			ret = tmp.toArray(new Path[0]);
+		}
+		else {
+			throw new DMLRuntimeException("Unable to read meta data files from directory "+file.toString());
+		}
 		return ret;
 	}
 	

@@ -25,6 +25,8 @@ import java.util.Set;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.hops.OptimizerUtils;
@@ -110,10 +112,10 @@ public class OptimizationWrapper
 			StatisticMonitor.putPFStat( pb.getID() , Stat.OPT_T, timeVal);
 	}
 
-	// public static void setLogLevel( Level optLogLevel ) {
-	// 	Logger.getLogger("org.apache.sysds.runtime.controlprogram.parfor.opt")
-	// 			.setLevel( optLogLevel );
-	// }
+	public static void setLogLevel( Level optLogLevel ) {
+		Logger.getLogger("org.apache.sysds.runtime.controlprogram.parfor.opt")
+			.setLevel( optLogLevel );
+	}
 
 	@SuppressWarnings("unused")
 	private static void optimize( POptMode otype, int ck, double cm, ParForStatementBlock sb, ParForProgramBlock pb, ExecutionContext ec, boolean monitor ) 
@@ -137,12 +139,10 @@ public class OptimizationWrapper
 			ForStatement fs = (ForStatement) sb.getStatement(0);
 			
 			//debug output before recompilation
-			if( LOG.isDebugEnabled() ) 
-			{
+			if( LOG.isDebugEnabled() ) {
 				try {
 					tree = OptTreeConverter.createOptTree(ck, cm, opt.getPlanInputType(), sb, pb, ec); 
 					LOG.debug("ParFOR Opt: Input plan (before recompilation):\n" + tree.explain(false));
-					OptTreeConverter.clear();
 				}
 				catch(Exception ex)
 				{
@@ -185,7 +185,7 @@ public class OptimizationWrapper
 				LocalVariableMap tmp = (LocalVariableMap) ec.getVariables().clone();
 				ResetType reset = ConfigurationManager.isCodegenEnabled() ? 
 					ResetType.RESET_KNOWN_DIMS : ResetType.RESET;
-				Recompiler.recompileProgramBlockHierarchy(pb.getChildBlocks(), tmp, 0, reset);
+				Recompiler.recompileProgramBlockHierarchy(pb.getChildBlocks(), tmp, 0, true, reset);
 				
 				//inter-procedural optimization (based on previous recompilation)
 				if( pb.hasFunctions() ) {
@@ -201,7 +201,7 @@ public class OptimizationWrapper
 							//reset recompilation flags according to recompileOnce because it is only safe if function is recompileOnce 
 							//because then recompiled for every execution (otherwise potential issues if func also called outside parfor)
 							ResetType reset2 = fpb.isRecompileOnce() ? reset : ResetType.NO_RESET;
-							Recompiler.recompileProgramBlockHierarchy(fpb.getChildBlocks(), new LocalVariableMap(), 0, reset2);
+							Recompiler.recompileProgramBlockHierarchy(fpb.getChildBlocks(), new LocalVariableMap(), 0, true, reset2);
 						}
 					}
 				}
@@ -221,11 +221,11 @@ public class OptimizationWrapper
 		}
 		
 		//create cost estimator
-		CostEstimator est = createCostEstimator( cmtype, ec.getVariables() );
+		CostEstimator est = createCostEstimator( cmtype, tree, ec.getVariables() );
 		LOG.trace("ParFOR Opt: Created cost estimator ("+cmtype+")");
 		
 		//core optimize
-		opt.optimize( sb, pb, tree, est, ec );
+		opt.optimize(sb, pb, tree, est, ec);
 		LOG.debug("ParFOR Opt: Optimized plan (after optimization): \n" + tree.explain(false));
 		
 		//assert plan correctness
@@ -243,9 +243,6 @@ public class OptimizationWrapper
 		LOG.trace("ParFOR Opt: Optimized plan in "+ltime+"ms.");
 		if( DMLScript.STATISTICS )
 			Statistics.incrementParForOptimTime(ltime);
-		
-		//cleanup phase
-		OptTreeConverter.clear();
 		
 		//monitor stats
 		if( monitor ) {
@@ -265,14 +262,14 @@ public class OptimizationWrapper
 		}
 	}
 
-	private static CostEstimator createCostEstimator( CostModelType cmtype, LocalVariableMap vars )  {
+	private static CostEstimator createCostEstimator( CostModelType cmtype, OptTree tree, LocalVariableMap vars )  {
 		switch( cmtype ) {
 			case STATIC_MEM_METRIC:
-				return new CostEstimatorHops( 
-					OptTreeConverter.getAbstractPlanMapping() );
+				return new CostEstimatorHops(
+					tree.getAbstractPlanMapping() );
 			case RUNTIME_METRICS:
-				return new CostEstimatorRuntime( 
-					OptTreeConverter.getAbstractPlanMapping(), 
+				return new CostEstimatorRuntime(
+					tree.getAbstractPlanMapping(),
 					(LocalVariableMap)vars.clone() );
 			default:
 				throw new DMLRuntimeException("Undefined cost model type: '"+cmtype+"'.");

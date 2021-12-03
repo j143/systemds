@@ -38,8 +38,10 @@
 			<excludes>
 				<exclude>algorithms/obsolete/*</exclude>
 				<exclude>algorithms/obsolete</exclude>
-				<exclude>perftest/*</exclude>
+				<exclude>perftest/**/*</exclude>
 				<exclude>perftest</exclude>
+				<exclude>perftestDeprecated/*</exclude>
+				<exclude>perftestDeprecated</exclude>
 				<exclude>staging/**/*</exclude>
 				<exclude>staging</exclude>
 			</excludes>
@@ -80,15 +82,17 @@
 			<includes>
 				<include>*:${artifactId}*</include>
 				<include>*:avro*</include>
+				<include>*:commons-beanutils*</include>
 				<include>*:commons-cli*</include>
 				<include>*:commons-collections*</include>
 				<include>*:commons-configuration*</include>
-				<include>*:commons-httpclient*</include>
+				<!-- <include>*:commons-httpclient*</include> -->
 				<include>*:commons-io*</include>
 				<include>*:commons-lang</include>
 				<include>*:commons-lang3</include>
 				<include>*:commons-logging*</include>
 				<include>*:commons-math3*</include>
+				<include>*:commons-text*</include>
 				<include>*:guava*</include>
 				<include>*:hadoop-auth*</include>
 				<include>*:hadoop-client*</include>
@@ -96,14 +100,20 @@
 				<include>*:hadoop-hdfs*</include>
 				<include>*:hadoop-mapreduce-client*</include>
 				<include>*:hadoop-yarn*</include>
+				<include>*:htrace-core*</include>
 				<include>*:jackson-core-asl*</include>
 				<include>*:jackson-mapper-asl*</include>
+				<include>*:janino*</include>
 				<include>*:log4j*</include>
+				<include>*:netty*</include>
 				<include>*:protobuf-java*</include>
+				<include>*:py4j*</include>
+				<include>*:re2j*</include>
 				<include>*:slf4j-api*</include>
 				<include>*:slf4j-log4j*</include>
-				<include>*:netty*</include>
-				<include>*:py4j*</include>
+				<include>*:spark-core*</include>
+				<include>*:stax2-api*</include>
+				<include>*:woodstox*</include>
 			</includes>
 			<outputDirectory>./lib</outputDirectory>
 			<scope>compile</scope>

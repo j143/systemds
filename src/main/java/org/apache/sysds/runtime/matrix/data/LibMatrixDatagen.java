@@ -33,6 +33,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.commons.math3.random.Well1024a;
 import org.apache.sysds.hops.DataGenOp;
 import org.apache.sysds.runtime.DMLRuntimeException;
+import org.apache.sysds.runtime.compress.CompressedMatrixBlock;
 import org.apache.sysds.runtime.controlprogram.parfor.util.IDSequence;
 import org.apache.sysds.runtime.data.DenseBlock;
 import org.apache.sysds.runtime.data.SparseBlock;
@@ -186,6 +187,9 @@ public class LibMatrixDatagen
 		int blen = rgen._blocksize;
 		double sparsity = rgen._sparsity;
 		
+		if(out instanceof CompressedMatrixBlock)
+			throw new DMLRuntimeException("Invalid to use compressed matrix block as output");
+
 		// sanity check valid dimensions and sparsity
 		checkMatrixDimensionsAndSparsity(rows, cols, sparsity);
 		
@@ -258,6 +262,9 @@ public class LibMatrixDatagen
 		int blen = rgen._blocksize;
 		double sparsity = rgen._sparsity;
 		
+		if(out instanceof CompressedMatrixBlock)
+			throw new DMLRuntimeException("Invalid to use compressed matrix block as output");
+
 		//sanity check valid dimensions and sparsity
 		checkMatrixDimensionsAndSparsity(rows, cols, sparsity);
 		
@@ -488,82 +495,108 @@ public class LibMatrixDatagen
 				int coloffset = cbj*blen;
 				
 				// select the appropriate block-level seed and init PRNG
-				long seed = !invokedFromCP ?  bSeed : seeds[counter++]; 
+				long seed = !invokedFromCP ?  bSeed : seeds[counter++];
 				valuePRNG.setSeed(seed);
 				
 				// Initialize the PRNGenerator for determining cells that contain a non-zero value
 				// Note that, "pdf" parameter applies only to cell values and the individual cells 
 				// are always selected uniformly at random.
-				nnzPRNG.setSeed(seed);
-				
-				// block-level sparsity, which may differ from overall sparsity in the matrix.
-				// (e.g., border blocks may fall under skinny matrix turn point, in CP this would be 
-				// irrelevant but we need to ensure consistency with MR)
-				boolean localSparse = MatrixBlock.evalSparseFormatInMemory(
+				// Also note that we cannot use the same seed here, because for ultra-sparse generation
+				// the number of calls to the valuePRNG and nnzPRNG are the same, thus creating correlated
+				// outcomes (bias toward the end of the value range)
+				nnzPRNG.setSeed((long)(valuePRNG.nextDouble()*Long.MAX_VALUE));
+				boolean localSparse = sparsity < 1 && MatrixBlock.evalSparseFormatInMemory(
 					blockrows, blockcols, (long)(sparsity*blockrows*blockcols));
-				if ( localSparse ) {
+				if ( localSparse) {
 					SparseBlock c = out.sparseBlock;
-					// Prob [k-1 zeros before a nonzero] = Prob [k-1 < log(uniform)/log(1-p) < k] = p*(1-p)^(k-1), where p=sparsity
-					double log1mp = Math.log(1-sparsity);
-					int idx = 0;  // takes values in range [1, blen*blen] (both ends including)
-					long blocksize = blockrows*blockcols;
-					while(idx < blocksize) {
-						//compute skip to next index
-						idx = idx + (int) Math.ceil(Math.log(nnzPRNG.nextDouble())/log1mp);
-						if ( idx > blocksize) break;
-						// translate idx into (r,c) within the block
-						int rix = (idx-1)/blockcols;
-						int cix = (idx-1)%blockcols;
-						double val = min + (range * valuePRNG.nextDouble());
-						c.allocate(rowoffset+rix, estnnzRow, clen);
-						c.append(rowoffset+rix, coloffset+cix, val);
+					if(c == null){
+						out.allocateSparseRowsBlock();
+						out.sparse = true; //otherwise ignored
+						c = out.sparseBlock;
 					}
+					genSparse(c, clen, blockrows, blockcols, rowoffset, coloffset,
+						sparsity, estnnzRow, min, range, valuePRNG, nnzPRNG);
 				}
 				else {
 					if (sparsity == 1.0) {
-						DenseBlock c = out.getDenseBlock();
-						for(int ii = 0; ii < blockrows; ii++) {
-							double[] cvals = c.values(rowoffset+ii);
-							int cix = c.pos(rowoffset+ii, coloffset);
-							for(int jj = 0; jj < blockcols; jj++)
-								cvals[cix+jj] = min + (range * valuePRNG.nextDouble());
-						}
+						genFullyDense(out.getDenseBlock(), blockrows, blockcols,
+							rowoffset, coloffset, min, range, valuePRNG);
 					}
 					else {
-						if (out.sparse ) {
-							/* This case evaluated only when this function is invoked from CP. 
-							 * In this case:
-							 *     sparse=true -> entire matrix is in sparse format and hence denseBlock=null
-							 *     localSparse=false -> local block is dense, and hence on MR side a denseBlock will be allocated
-							 * i.e., we need to generate data in a dense-style but set values in sparseRows
-							 * 
-							 */
-							// In this case, entire matrix is in sparse format but the current block is dense
-							SparseBlock c = out.sparseBlock;
-							for(int ii=0; ii < blockrows; ii++) {
-								for(int jj=0; jj < blockcols; jj++) {
-									if(nnzPRNG.nextDouble() <= sparsity) {
-										double val = min + (range * valuePRNG.nextDouble());
-										c.allocate(ii+rowoffset, estnnzRow, clen);
-										c.append(ii+rowoffset, jj+coloffset, val);
-									}
-								}
-							}
-						}
-						else {
-							DenseBlock c = out.getDenseBlock();
-							for(int ii = 0; ii < blockrows; ii++) {
-								double[] cvals = c.values(rowoffset+ii);
-								int cix = c.pos(rowoffset+ii, coloffset);
-								for(int jj = 0; jj < blockcols; jj++)
-									if(nnzPRNG.nextDouble() <= sparsity)
-										cvals[cix+jj] =  min + (range * valuePRNG.nextDouble());
-							}
-						}
+						genDense(out, clen, blockrows, blockcols, rowoffset, coloffset,
+							sparsity, estnnzRow, min, range, valuePRNG, nnzPRNG);
 					}
 				} // sparse or dense 
 			} // cbj
 		} // rbi
+	}
+	
+	private static void genSparse(SparseBlock c, int clen, int blockrows, int blockcols, int rowoffset, int coloffset,
+		double sparsity, int estnnzRow, double min, double range, PRNGenerator valuePRNG, UniformPRNGenerator nnzPRNG)
+	{
+		// Prob [k-1 zeros before a nonzero] = Prob [k-1 < log(uniform)/log(1-p) < k] = p*(1-p)^(k-1), where p=sparsity
+		double log1mp = Math.log(1-sparsity);
+		long idx = 0;  // takes values in range [1, blen*blen] (both ends including)
+		long blocksize = blockrows*blockcols;
+		while(idx < blocksize) {
+			//compute skip to next index
+			idx = idx + (long) Math.ceil(Math.log(nnzPRNG.nextDouble())/log1mp);
+			//check blocksize and save int casts
+			if ( idx > blocksize)
+				break;
+			// translate idx into (r,c) within the block
+			int rix = (int)(idx-1)/blockcols;
+			int cix = (int)(idx-1)%blockcols;
+			double val = min + (range * valuePRNG.nextDouble());
+			c.allocate(rowoffset+rix, estnnzRow, clen);
+			c.append(rowoffset+rix, coloffset+cix, val);
+		}
+	}
+	
+	private static void genDense(MatrixBlock out, int clen, int blockrows, int blockcols, int rowoffset, int coloffset,
+		double sparsity, int estnnzRow, double min, double range, PRNGenerator valuePRNG, UniformPRNGenerator nnzPRNG)
+	{
+		if (out.sparse ) {
+			/* This case evaluated only when this function is invoked from CP. 
+			 * In this case:
+			 *     sparse=true -> entire matrix is in sparse format and hence denseBlock=null
+			 *     localSparse=false -> local block is dense, and hence on MR side a denseBlock will be allocated
+			 * i.e., we need to generate data in a dense-style but set values in sparseRows
+			 * 
+			 */
+			// In this case, entire matrix is in sparse format but the current block is dense
+			SparseBlock c = out.sparseBlock;
+			for(int ii=0; ii < blockrows; ii++) {
+				for(int jj=0; jj < blockcols; jj++) {
+					if(nnzPRNG.nextDouble() <= sparsity) {
+						double val = min + (range * valuePRNG.nextDouble());
+						c.allocate(ii+rowoffset, estnnzRow, clen);
+						c.append(ii+rowoffset, jj+coloffset, val);
+					}
+				}
+			}
+		}
+		else {
+			DenseBlock c = out.getDenseBlock();
+			for(int ii = 0; ii < blockrows; ii++) {
+				double[] cvals = c.values(rowoffset+ii);
+				int cix = c.pos(rowoffset+ii, coloffset);
+				for(int jj = 0; jj < blockcols; jj++)
+					if(nnzPRNG.nextDouble() <= sparsity)
+						cvals[cix+jj] =  min + (range * valuePRNG.nextDouble());
+			}
+		}
+	}
+	
+	private static void genFullyDense(DenseBlock c, int blockrows, int blockcols, int rowoffset, int coloffset, 
+		double min, double range, PRNGenerator valuePRNG)
+	{
+		for(int i = rowoffset; i < rowoffset+blockrows; i++) {
+			double[] cvals = c.values(i);
+			int cix = c.pos(i, coloffset);
+			for(int j = 0; j < blockcols; j++)
+				cvals[cix+j] = min + (range * valuePRNG.nextDouble());
+		}
 	}
 
 	private static void checkMatrixDimensionsAndSparsity(int rows, int cols, double sp) {
@@ -609,10 +642,15 @@ public class LibMatrixDatagen
 		public Long call() {
 			//execute rand operations (with block indexes)
 			genRandomNumbers(true, _rl, _ru, _cl, _cu, _out, _rgen, _bSeed, _seeds);
+			
 			//thread-local maintenance of non-zero values
 			int blen =_rgen._blocksize;
-			return _out.recomputeNonZeros(_rl*blen, Math.min(_ru*blen,_rgen._rows)-1,
-				_cl*blen, Math.min(_cu*blen, _rgen._cols)-1);
+			int rl = _rl*blen;
+			int ru = Math.min(_ru*blen,_rgen._rows);
+			int cl = _cl*blen;
+			int cu = Math.min(_cu*blen, _rgen._cols);
+			return _rgen.isFullyDense() ? (long)(ru-rl) * (cu-cl) :
+				_out.recomputeNonZeros(rl, ru-1, cl, cu-1);
 		}
 	}
 }

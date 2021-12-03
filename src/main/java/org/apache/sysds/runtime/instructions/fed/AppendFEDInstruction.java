@@ -32,6 +32,7 @@ import org.apache.sysds.runtime.instructions.cp.CPOperand;
 import org.apache.sysds.runtime.matrix.operators.Operator;
 import org.apache.sysds.runtime.matrix.operators.ReorgOperator;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
+import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.runtime.meta.MetaDataUtils;
 
 public class AppendFEDInstruction extends BinaryFEDInstruction {
@@ -89,29 +90,37 @@ public class AppendFEDInstruction extends BinaryFEDInstruction {
 		
 		// federated/federated
 		if( mo1.isFederated() && mo2.isFederated() 
-			&& mo1.getFedMapping().getType()==mo2.getFedMapping().getType() ) 
+			&& mo1.getFedMapping().getType()==mo2.getFedMapping().getType()
+			&& !mo1.getFedMapping().isAligned(mo2.getFedMapping(), FederationMap.AlignType.valueOf(mo1.getFedMapping().getType().name()))
+		)
 		{
 			long id = FederationUtils.getNextFedDataID();
 			long roff = _cbind ? 0 : dc1.getRows();
 			long coff = _cbind ? dc1.getCols() : 0;
-			out.setFedMapping(mo1.getFedMapping().identCopy(getTID(), id)
-				.bind(roff, coff, mo2.getFedMapping().identCopy(getTID(), id)));
+
+			out.setFedMapping(mo1.getFedMapping().identCopy(getTID(), id).bind(roff, coff, mo2.getFedMapping().identCopy(getTID(), id)));
 		}
 		// federated/local, local/federated cbind
 		else if( (mo1.isFederated(FType.ROW) || mo2.isFederated(FType.ROW)) && _cbind ) {
-			MatrixObject moFed = mo1.isFederated(FType.ROW) ? mo1 : mo2;
-			MatrixObject moLoc = mo1.isFederated(FType.ROW) ? mo2 : mo1;
+			boolean isFed = mo1.isFederated(FType.ROW) && mo1.isFederatedExcept(FType.BROADCAST);
+			boolean isSpark = instString.contains("SPARK");
+			MatrixObject moFed = isFed ? mo1 : mo2;
+			MatrixObject moLoc = isFed ? mo2 : mo1;
 			
 			//construct commands: broadcast lhs, fed append, clean broadcast
 			FederatedRequest[] fr1 = moFed.getFedMapping().broadcastSliced(moLoc, false);
 			FederatedRequest fr2 = FederationUtils.callInstruction(instString, output,
-				new CPOperand[]{input1, input2}, mo1.isFederated(FType.ROW) ?
+				new CPOperand[]{input1, input2}, isFed ?
 				new long[]{ moFed.getFedMapping().getID(), fr1[0].getID()} :
 				new long[]{ fr1[0].getID(), moFed.getFedMapping().getID()});
-			FederatedRequest fr3 = moFed.getFedMapping().cleanup(getTID(), fr1[0].getID());
 			
 			//execute federated operations and set output
-			moFed.getFedMapping().execute(getTID(), true, fr1, fr2, fr3);
+			if(isSpark) {
+				FederatedRequest tmp = new FederatedRequest(FederatedRequest.RequestType.PUT_VAR, fr2.getID(), new MatrixCharacteristics(-1, -1), mo1.getDataType());
+				moFed.getFedMapping().execute(getTID(), true, fr1, tmp, fr2);
+			} else {
+				moFed.getFedMapping().execute(getTID(), true, fr1, fr2);
+			}
 			out.setFedMapping(moFed.getFedMapping().copyWithNewID(fr2.getID(), out.getNumColumns()));
 		}
 		// federated/local, local/federated rbind
@@ -128,8 +137,9 @@ public class AppendFEDInstruction extends BinaryFEDInstruction {
 		}
 		else {
 			throw new DMLRuntimeException("Unsupported federated append: "
-				+ (mo1.isFederated() ? mo1.getFedMapping().getType().name():"LOCAL") + " "
-				+ (mo2.isFederated() ? mo2.getFedMapping().getType().name():"LOCAL") + " " + _cbind);
+				+ " input 1 FType is " + (mo1.isFederated() ? mo1.getFedMapping().getType().name():"LOCAL")
+				+ ", input 2 FType is " + (mo2.isFederated() ? mo2.getFedMapping().getType().name():"LOCAL")
+				+ ", and column bind is " + _cbind);
 		}
 	}
 }

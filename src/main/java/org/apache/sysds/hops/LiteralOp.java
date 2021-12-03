@@ -22,7 +22,7 @@ package org.apache.sysds.hops;
 import org.apache.sysds.lops.Data;
 import org.apache.sysds.lops.Lop;
 import org.apache.sysds.lops.LopsException;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
@@ -185,7 +185,7 @@ public class LiteralOp extends Hop
 	}
 	
 	@Override
-	protected ExecType optFindExecType() {
+	protected ExecType optFindExecType(boolean transitive) {
 		// Since a Literal hop does not represent any computation,
 		// this function is not applicable.
 		return null;

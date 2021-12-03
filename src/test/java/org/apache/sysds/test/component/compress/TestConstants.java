@@ -24,13 +24,6 @@ package org.apache.sysds.test.component.compress;
  */
 public class TestConstants {
 
-	private static final int rows[] = {4, 2008, 1283, 500, 1, 100, 5000, 100000, 64000*2};
-	private static final int cols[] = {20, 20, 13, 1, 321, 1, 5, 1, 1};
-	private static final double[] sparsityValues = {0.9, 0.1, 0.01, 0.0, 1.0};
-
-	private static final int[] mins = {-10, -127 * 2};
-	private static final int[] maxs = {10, 127};
-
 	public enum SparsityType {
 		DENSE, SPARSE, ULTRA_SPARSE, EMPTY, FULL
 	}
@@ -41,6 +34,8 @@ public class TestConstants {
 		RAND_ROUND, // Values rounded to nearest whole numbers.
 		OLE_COMPRESSIBLE, // Ideal inputs for OLE Compression.
 		RLE_COMPRESSIBLE, // Ideal inputs for RLE Compression.
+		ONE_HOT,
+		UNBALANCED_SPARSE, // An input where some columns are super dense and some very sparse
 	}
 
 	public enum MatrixTypology {
@@ -56,25 +51,39 @@ public class TestConstants {
 	}
 
 	public enum ValueRange {
-		SMALL, LARGE, BYTE, BOOLEAN
+		SMALL, LARGE, BYTE, BOOLEAN, NEGATIVE, POSITIVE, CONST
 	}
 
-	public enum OverLapping{
-		COL, MATRIX, NONE, MATRIX_PLUS, MATRIX_MULT_NEGATIVE
+	public enum OverLapping {
+		COL, MATRIX, NONE, MATRIX_PLUS, MATRIX_MULT_NEGATIVE, SQUASH, PLUS, APPEND_EMPTY, APPEND_CONST, PLUS_LARGE, C_BIND_SELF;
+
+		public static boolean effectOnOutput(OverLapping opcode) {
+			switch(opcode) {
+				case MATRIX_MULT_NEGATIVE:
+				case MATRIX:
+				case SQUASH:
+				case COL:
+				case MATRIX_PLUS:
+				case PLUS_LARGE:
+					return true;
+				default:
+					return false;
+			}
+		}
 	}
 
 	public static double getSparsityValue(SparsityType sparsityType) {
 		switch(sparsityType) {
 			case DENSE:
-				return sparsityValues[0];
+				return 0.8;
 			case SPARSE:
-				return sparsityValues[1];
+				return 0.1;
 			case ULTRA_SPARSE:
-				return sparsityValues[2];
+				return 0.01;
 			case EMPTY:
-				return sparsityValues[3];
+				return 0.0;
 			case FULL:
-				return sparsityValues[4];
+				return 1.0;
 			default:
 				throw new RuntimeException("Invalid Sparsity type");
 		}
@@ -83,13 +92,17 @@ public class TestConstants {
 	public static int getMinRangeValue(ValueRange valueRange) {
 		switch(valueRange) {
 			case SMALL:
-				return mins[0];
+				return -1;
 			case LARGE:
-				return mins[1];
+				return -127 * 2;
 			case BYTE:
 				return -127;
 			case BOOLEAN:
 				return 0;
+			case NEGATIVE:
+				return -132;
+			case CONST:
+				return 14;
 			default:
 				throw new RuntimeException("Invalid range value enum type");
 		}
@@ -98,13 +111,17 @@ public class TestConstants {
 	public static int getMaxRangeValue(ValueRange valueRange) {
 		switch(valueRange) {
 			case SMALL:
-				return maxs[0];
+				return 5;
 			case LARGE:
-				return maxs[1];
+				return -127;
 			case BYTE:
 				return 127;
 			case BOOLEAN:
 				return 1;
+			case NEGATIVE:
+				return -23;
+			case CONST:
+				return 14;
 			default:
 				throw new RuntimeException("Invalid range value enum type");
 		}
@@ -113,23 +130,11 @@ public class TestConstants {
 	public static int getNumberOfRows(MatrixTypology matrixTypology) {
 		switch(matrixTypology) {
 			case SMALL:
-				return rows[0];
+				return 500;
 			case LARGE:
-				return rows[1];
-			case FEW_ROW:
-				return rows[2];
-			case FEW_COL:
-				return rows[3];
-			case SINGLE_ROW:
-				return rows[4];
+				return 1000;
 			case SINGLE_COL:
-				return rows[5];
-			case L_ROWS:
-				return rows[6];
-			case XL_ROWS:
-				return rows[7];
-			case SINGLE_COL_L:
-				return rows[8];
+				return 5000;
 			default:
 				throw new RuntimeException("Invalid matrix enum type");
 		}
@@ -138,23 +143,11 @@ public class TestConstants {
 	public static int getNumberOfColumns(MatrixTypology matrixTypology) {
 		switch(matrixTypology) {
 			case SMALL:
-				return cols[0];
+				return 6;
 			case LARGE:
-				return cols[1];
-			case FEW_ROW:
-				return cols[2];
-			case FEW_COL:
-				return cols[3];
-			case SINGLE_ROW:
-				return cols[4];
+				return 9;
 			case SINGLE_COL:
-				return cols[5];
-			case L_ROWS:
-				return cols[6];
-			case XL_ROWS:
-				return cols[7];
-			case SINGLE_COL_L:
-				return cols[8];
+				return 1;
 			default:
 				throw new RuntimeException("Invalid matrix enum type");
 		}

@@ -23,40 +23,58 @@ name: Function Test
 
 on:
   push:
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '*.html'
+      - 'src/main/python/**'
+      - 'dev/**'
     branches:
-      - master
+      - main
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '*.html'
+      - 'src/main/python/**'
+      - 'dev/**'
     branches:
-      - master
+      - main
 
 jobs:
-  applicationsTests:
+  test:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         tests: [
-          "**.functions.aggregate.**,**.functions.append.**,**.functions.binary.frame.**,**.functions.binary.matrix.**,**.functions.binary.scalar.**,**.functions.binary.tensor.**",
-          "**.functions.blocks.**,**.functions.compress.**,**.functions.countDistinct.**,**.functions.data.misc.**,**.functions.data.rand.**,**.functions.data.tensor.**,**.functions.codegenalg.parttwo.**,**.functions.codegen.**,**.functions.caching.**",
+          "**.functions.a**.**,**.functions.binary.frame.**,**.functions.binary.matrix.**,**.functions.binary.scalar.**,**.functions.binary.tensor.**",
+          "**.functions.blocks.**,**.functions.data.rand.**,**.functions.countDistinct.**,**.functions.data.misc.**",
+          "**.functions.compress.**,,**.functions.data.tensor.**,**.functions.codegenalg.parttwo.**,**.functions.codegen.**,**.functions.caching.**",
           "**.functions.binary.matrix_full_cellwise.**,**.functions.binary.matrix_full_other.**",
-          "**.functions.federated.**",
+          "**.functions.federated.algorithms.**",
+          "**.functions.federated.io.**,**.functions.federated.paramserv.**,**.functions.federated.primitives.**,**.functions.federated.transform.**",
           "**.functions.codegenalg.partone.**",
-          "**.functions.builtin.**",
-          "**.functions.frame.**,**.functions.indexing.**,**.functions.io.**,**.functions.jmlc.**,**.functions.lineage.**",
-          "**.functions.dnn.**,**.functions.misc.**,**.functions.mlcontext.**,**.functions.paramserv.**",
-          "**.functions.nary.**,**.functions.parfor.**,**.functions.pipelines.**,**.functions.privacy.**,**.functions.quaternary.**,**.functions.unary.scalar.**,**.functions.updateinplace.**,**.functions.vect.**",
+          "**.functions.builtin.part1.**",
+          "**.functions.builtin.part2.**",
+          "**.functions.frame.**,**.functions.indexing.**,**.functions.io.**,**.functions.iogen.**,**.functions.jmlc.**,**.functions.lineage.**",
+          "**.functions.dnn.**,**.functions.paramserv.**",
+          "**.functions.misc.**,**.functions.mlcontext.**",
+          "**.functions.nary.**,**.functions.quaternary.**",
+          "**.functions.parfor.**,**.functions.pipelines.**,**.functions.privacy.**",
+          "**.functions.unary.scalar.**,**.functions.updateinplace.**,**.functions.vect.**",
           "**.functions.reorg.**,**.functions.rewrite.**,**.functions.ternary.**,**.functions.transform.**",
           "**.functions.unary.matrix.**"
           ]
         os: [ubuntu-latest]
-    name: Function Test ${{ matrix.tests }}
+    name: ${{ matrix.tests }}
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v2
 
     - name: Cache Maven Dependencies
-      uses: actions/cache@v1
+      uses: actions/cache@v2
       with:
         path: ~/.m2/repository
         key: ${{ runner.os }}-maven-test-${{ hashFiles('**/pom.xml') }}

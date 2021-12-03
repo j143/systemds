@@ -28,7 +28,7 @@ import java.util.List;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.runtime.DMLRuntimeException;
-import org.apache.sysds.runtime.compress.colgroup.ColGroup.ColGroupType;
+import org.apache.sysds.runtime.compress.colgroup.AColGroup.ColGroupType;
 
 /**
  * This has the IO responsibility of ColGroups, such that it enables to read and write ColGroups to and from a DataInput
@@ -41,53 +41,28 @@ public class ColGroupIO {
 	/**
 	 * Read groups from a file. Note that the information about how many should be in the file already.
 	 * 
-	 * @param in The Data input object to read from.
+	 * @param in    The Data input object to read from.
+	 * @param nRows The number of rows in the read groups.
 	 * @return Return a List containing the ColGroups from the DataInput.
 	 * @throws IOException Throws IO Exception if the in refuses to read data.
 	 */
-	public static List<ColGroup> readGroups(DataInput in) throws IOException {
+	public static List<AColGroup> readGroups(DataInput in, int nRows) throws IOException {
 
 		// Read in how many colGroups there are
-		int nColGroups = in.readInt();
-		LOG.debug("reading " + nColGroups + " ColGroups");
+		final int nColGroups = in.readInt();
+		if(LOG.isDebugEnabled())
+			LOG.debug("reading " + nColGroups + " ColGroups");
+		
 		// Allocate that amount into an ArrayList
-		List<ColGroup> _colGroups = new ArrayList<>(nColGroups);
+		final List<AColGroup> _colGroups = new ArrayList<>(nColGroups);
 
 		// Read each ColGroup one at a time.
-
 		for(int i = 0; i < nColGroups; i++) {
 			ColGroupType ctype = ColGroupType.values()[in.readByte()];
-			LOG.debug(ctype);
-			ColGroup grp = null;
-
-			// create instance of column group
-			switch(ctype) {
-				case UNCOMPRESSED:
-					grp = new ColGroupUncompressed();
-					break;
-				case OLE:
-					grp = new ColGroupOLE();
-					break;
-				case RLE:
-					grp = new ColGroupRLE();
-					break;
-				case DDC1:
-					grp = new ColGroupDDC1();
-					break;
-				case DDC2:
-					grp = new ColGroupDDC2();
-					break;
-				case CONST:
-					grp = new ColGroupConst();
-					break;
-				default:
-					throw new DMLRuntimeException("Unsupported ColGroup Type used:  " + ctype);
-			}
-
-			// Deserialize and add column group (flag for shared dictionary passed
-			// and numCols evaluated in DDC1 because numCols not available yet
+			if(LOG.isTraceEnabled())
+				LOG.trace("Reading in : " + ctype);
+			final AColGroup grp = constructColGroup(ctype, nRows);
 			grp.readFields(in);
-
 			_colGroups.add(grp);
 		}
 
@@ -101,13 +76,50 @@ public class ColGroupIO {
 	 * @param colGroups List of the ColGroups to write to file.
 	 * @throws IOException Throws IO Exception if the out refuses to write.
 	 */
-	public static void writeGroups(DataOutput out, List<ColGroup> colGroups) throws IOException {
+	public static void writeGroups(DataOutput out, List<AColGroup> colGroups) throws IOException {
 		// Write out how many ColGroups to save.
 		out.writeInt(colGroups.size());
-
-		for(ColGroup grp : colGroups) {
-			out.writeByte(grp.getColGroupType().ordinal());
+		for(AColGroup grp : colGroups)
 			grp.write(out);
+	}
+
+	/**
+	 * Get the size on disk for the given list of column groups
+	 * 
+	 * @param colGroups A List of column groups to see the disk space required for.
+	 * @return The exact disk size required for writing the compressed matrix.
+	 */
+	public static long getExactSizeOnDisk(List<AColGroup> colGroups) {
+		long ret = 4; // int for number of colGroups.
+		for(AColGroup grp : colGroups) 
+			ret += grp.getExactSizeOnDisk();
+		return ret;
+	}
+
+	private static AColGroup constructColGroup(ColGroupType ctype, int nRows){
+		switch(ctype) {
+			case UNCOMPRESSED:
+				return new ColGroupUncompressed();
+			case OLE:
+				return new ColGroupOLE(nRows);
+			case RLE:
+				return new ColGroupRLE(nRows);
+			case DDC:
+				return new ColGroupDDC(nRows);
+			case CONST:
+				return new ColGroupConst();
+			case EMPTY:
+				return new ColGroupEmpty();
+			case SDC:
+				return new ColGroupSDC(nRows);
+			case SDCSingle:
+				return new ColGroupSDCSingle(nRows);
+			case SDCSingleZeros:
+				return new ColGroupSDCSingleZeros(nRows);
+			case SDCZeros:
+				return new ColGroupSDCZeros(nRows);
+			default:
+				throw new DMLRuntimeException("Unsupported ColGroup Type used:  " + ctype);
 		}
 	}
 }

@@ -19,17 +19,11 @@
 #
 # -------------------------------------------------------------
 
-import math
-import os
-import random
-import shutil
-import sys
 import unittest
 
 import numpy as np
-import scipy.stats as st
+from time import sleep
 from systemds.context import SystemDSContext
-from systemds.matrix import Matrix
 
 
 class TestPrint(unittest.TestCase):
@@ -39,18 +33,22 @@ class TestPrint(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.sds = SystemDSContext()
+        sleep(1.0)
+        # Clear stdout ...
+        cls.sds.get_stdout()
+        cls.sds.get_stdout()
 
     @classmethod
     def tearDownClass(cls):
         cls.sds.close()
 
     def test_print_01(self):
-        Matrix(self.sds, np.array([1])).to_string().print().compute()
-        self.assertEqual('1.000',self.sds.get_stdout()[0])
+        self.sds.from_numpy(np.array([1])).to_string().print().compute()
+        self.assertEqual(1,float(self.sds.get_stdout()[0]))
 
     def test_print_02(self):
         self.sds.scalar(1).print().compute()
-        self.assertEqual('1', self.sds.get_stdout()[0])
+        self.assertEqual(1,float(self.sds.get_stdout()[0]))
 
 if __name__ == "__main__":
     unittest.main(exit=False)

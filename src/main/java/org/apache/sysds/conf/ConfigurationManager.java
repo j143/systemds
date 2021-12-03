@@ -21,6 +21,7 @@ package org.apache.sysds.conf;
 
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.sysds.conf.CompilerConfig.ConfigType;
+import org.apache.sysds.lops.Compression.CompressConfig;
 
 
 
@@ -170,6 +171,26 @@ public class ConfigurationManager
 		return getCompilerConfigFlag(ConfigType.PARALLEL_CP_MATRIX_OPERATIONS);
 	}
 	
+	public static boolean isParallelTransform() {
+		return getDMLConfig().getBooleanValue(DMLConfig.PARALLEL_ENCODE);
+	}
+
+	public static boolean isStagedParallelTransform() {
+		return getDMLConfig().getBooleanValue(DMLConfig.PARALLEL_ENCODE_STAGED);
+	}
+
+	public static int getParallelApplyBlocks(){
+		return getDMLConfig().getIntValue(DMLConfig.PARALLEL_ENCODE_APPLY_BLOCKS);
+	}
+
+	public static int getParallelBuildBlocks(){
+		return getDMLConfig().getIntValue(DMLConfig.PARALLEL_ENCODE_BUILD_BLOCKS);
+	}
+	
+	public static int getNumThreads() {
+		return getDMLConfig().getIntValue(DMLConfig.PARALLEL_ENCODE_NUM_THREADS);
+	}
+
 	public static boolean isParallelParFor() {
 		return getCompilerConfigFlag(ConfigType.PARALLEL_LOCAL_OR_REMOTE_PARFOR);
 	}
@@ -177,6 +198,11 @@ public class ConfigurationManager
 	public static boolean isCodegenEnabled() {
 		return (getDMLConfig().getBooleanValue(DMLConfig.CODEGEN)
 			|| getCompilerConfigFlag(ConfigType.CODEGEN_ENABLED));
+	}
+
+	public static boolean isCompressionEnabled(){
+		CompressConfig compress = CompressConfig.valueOf(getDMLConfig().getTextValue(DMLConfig.COMPRESSED_LINALG).toUpperCase());
+		return compress.isEnabled();
 	}
 	
 	///////////////////////////////////////

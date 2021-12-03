@@ -23,8 +23,10 @@ import java.util.ArrayList;
 
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.hops.AggBinaryOp.SparkAggType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.compile.Dag;
+import org.apache.sysds.runtime.instructions.fed.FEDInstruction.FederatedOutput;
 import org.apache.sysds.runtime.privacy.PrivacyConstraint;
 
 
@@ -113,6 +115,13 @@ public abstract class Lop
 	 * Privacy Constraint
 	 */
 	protected PrivacyConstraint privacyConstraint;
+
+	/**
+	 * Enum defining if the output of the operation should be forced federated, forced local or neither.
+	 * If it is FOUT, the output should be kept at federated sites.
+	 * If it is LOUT, the output should be retrieved by the coordinator.
+	 */
+	protected FederatedOutput _fedOutput = null;
 	
 	/**
 	 * refers to #lops whose input is equal to the output produced by this lop.
@@ -136,8 +145,8 @@ public abstract class Lop
 	 * Constructor to be invoked by base class.
 	 * 
 	 * @param t lop type
-	 * @param dt data type
-	 * @param vt value type
+	 * @param dt data type of the output
+	 * @param vt value type of the output
 	 */
 	public Lop(Type t, DataType dt, ValueType vt) {
 		type = t;
@@ -264,6 +273,18 @@ public abstract class Lop
 	public void addInput(Lop op) {
 		inputs.add(op);
 	}
+	
+	/**
+	 * Method to replace an input to a Lop
+	 * @param oldInp old input Lop
+	 * @param newInp new input Lop
+	 */
+	public void replaceInput(Lop oldInp, Lop newInp) {
+		if (inputs.contains(oldInp)) {
+			int index = inputs.indexOf(oldInp);
+			inputs.set(index, newInp);
+		}
+	}
 
 	/**
 	 * Method to add output to Lop
@@ -273,6 +294,14 @@ public abstract class Lop
 
 	public void addOutput(Lop op) {
 		outputs.add(op);
+	}
+	
+	/**
+	 * Method to remove output from Lop
+	 * @param op Lop to remove
+	 */
+	public void removeOutput(Lop op) {
+		outputs.remove(op);
 	}
 
 	/**
@@ -285,6 +314,10 @@ public abstract class Lop
 
 	public PrivacyConstraint getPrivacyConstraint(){
 		return privacyConstraint;
+	}
+
+	public void setFederatedOutput(FederatedOutput fedOutput){
+		_fedOutput = fedOutput;
 	}
 	
 	public void setConsumerCount(int cc) {
@@ -342,12 +375,20 @@ public abstract class Lop
 	}
 
 	/**
-	 * Method to get the execution type (CP, CP_FILE, MR, SPARK, GPU, INVALID) of LOP
+	 * Method to get the execution type (CP, CP_FILE, MR, SPARK, GPU, FED, INVALID) of LOP
 	 * 
 	 * @return execution type
 	 */
  	public ExecType getExecType() {
 		return lps.getExecType();
+	}
+
+	/**
+	 * Set the execution type of LOP.
+	 * @param newExecType new execution type
+	 */
+	public void setExecType(ExecType newExecType){
+ 		lps.setExecType(newExecType);
 	}
 	
 	public boolean getProducesIntermediateOutput() {
@@ -373,6 +414,24 @@ public abstract class Lop
 
 	public OutputParameters getOutputParameters() {
 		return outParams;
+	}
+	
+	/**
+	 * Method to get aggregate type if applicable.
+	 * This method is overridden by the Lops with aggregate types (e.g. MapMult)
+	 * @return SparkAggType
+	 */
+	public SparkAggType getAggType() {
+		return SparkAggType.NONE;
+	}
+	
+	/**
+	 * Method to get the input to be broadcast.
+	 * This method is overridden by the Lops which require broadcasts (e.g. AppendM)
+	 * @return An input Lop or Null
+	 */
+	public Lop getBroadcastInput() {
+		return null;
 	}
 	
 
@@ -544,8 +603,25 @@ public abstract class Lop
 				 || !isDataExecLocation() );
 	}
 	
-	
-	
+	/**
+	 * Function that determines if all the outputs of a LOP are of CP execution types
+	 * 
+	 * @return true if all outputs are CP
+	 */
+	public boolean isAllOutputsCP() {
+		if (outputs.isEmpty())
+			return false;
+
+		boolean outCP = true;
+		for (Lop out : getOutputs()) {
+			if (out.getExecType() != ExecType.CP) {
+				outCP = false;
+				break;
+			}
+		}
+		return outCP;
+	}
+
 	/**
 	 * Method to prepare instruction operand with given parameters.
 	 * 

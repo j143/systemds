@@ -20,10 +20,56 @@
 #
 #-------------------------------------------------------------
 
+# Optional argument that can be a folder name for where generated data is stored
+TEMPFOLDER=$1
+if [ "$TEMPFOLDER" == "" ]; then TEMPFOLDER=temp ; fi
 
-# Micro Benchmarks:
+# Set properties
+export LOG4JPROP='conf/log4j-off.properties'
+export SYSDS_QUIET=1
 
-./scripts/perftest/MatrixMult.sh
+# Command to be executed
+#CMD="systemds"
+CMD="./sparkDML.sh"
 
-# Algorithms Benchmarks:
+# Possible lines to initialize Intel MKL, depending on version and install location
+#    . ~/intel/bin/compilervars.sh intel64
+#    . ~/intel/oneapi/setvars.sh intel64
+#    . /opt/intel/bin/compilervars.sh intel64
 
+### Micro Benchmarks:
+#./MatrixMult.sh
+#./MatrixTranspose.sh
+
+# init time measurement
+if [ ! -d logs ]; then mkdir -p logs ; fi
+if [ ! -d results ]; then mkdir -p results ; fi
+if [ ! -d results ]; then mkdir -p results ; fi
+date >> results/times.txt
+
+### Data Generation
+echo "-- Generating binomial data: " >> results/times.txt;
+./genBinomialData.sh ${CMD} ${TEMPFOLDER} &>> logs/genBinomialData.out
+echo "-- Generating multinomial data." >> results/times.txt;
+./genMultinomialData.sh ${CMD} ${TEMPFOLDER} &>> logs/genMultinomialData.out
+
+### Algorithms Benchmarks:
+./runAllBinomial.sh $CMD $TEMPFOLDER
+./runAllMultinomial.sh $CMD $TEMPFOLDER
+./runAllRegression.sh $CMD $TEMPFOLDER
+./fed/runAllFed.sh $CMD $TEMPFOLDER
+
+# TODO The following commented benchmarks have yet to be cleaned up and ported from perftestDeprecated to perftest
+#./runAllStats.sh $CMD $TEMPFOLDER
+#./runAllClustering.sh $CMD $TEMPFOLDER
+
+# add stepwise Linear 
+# add stepwise GLM
+#./runAllTrees $CMD $TEMPFOLDER
+# add randomForest
+#./runAllDimensionReduction $CMD $TEMPFOLDER
+#./runAllMatrixFactorization $CMD $TEMPFOLDER
+#ALS
+#./runAllSurvival $CMD $TEMPFOLDER
+#KaplanMeier
+#Cox

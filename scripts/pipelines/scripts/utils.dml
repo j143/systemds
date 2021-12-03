@@ -1,0 +1,361 @@
+#-------------------------------------------------------------
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+#-------------------------------------------------------------
+source("scripts/builtin/bandit.dml") as bandit;
+
+
+# remove empty wrapper for frames
+frameRemoveEmpty = function(Frame[Unknown] target, String marginParam, Matrix[Double] select)
+return (Frame[Unknown] frameblock)
+{
+  idx = seq(1, ncol(target))
+  # get the indexes of columns for recode transformation
+  index = vectorToCsv(idx)
+  # recode logical pipelines for easy handling
+  jspecR = "{ids:true, recode:["+index+"]}";
+  [Xd, M] = transformencode(target=target, spec=jspecR);
+  X = replace(target=Xd, pattern = NaN, replacement=0)
+  if(nrow(select) > 1 ) {
+    # TODO fix removeEmpty Spark instruction to accept margin as a variable for now only support literal 
+    if(marginParam == "rows")
+      X = removeEmpty(target = X, margin = "rows", select = select)
+    else
+      X = removeEmpty(target = X, margin = "cols", select = select)
+  }
+  else { 
+    if(marginParam == "rows")
+      X = removeEmpty(target = X, margin = "rows")
+    else
+      X = removeEmpty(target = X, margin = "cols")
+  }
+  frameblock = transformdecode(target = Xd, spec = jspecR, meta = M)
+  frameblock = frameblock[1:nrow(X), 1:ncol(X)]
+}
+
+
+#######################################################################
+# Function for group-wise/stratified sampling from all classes in labelled dataset
+# Inputs: The input dataset X, Y  and  sampling ratio between 0 and 1
+# Output: sample X and Y
+#######################################################################
+doSample = function(Matrix[Double] eX, Matrix[Double] eY, Double ratio, Boolean verbose = FALSE)
+  return (Matrix[Double] sampledX, Matrix[Double] sampledY)
+{
+  MIN_SAMPLE = 1000
+  sampled = floor(nrow(eX) * ratio)
+  sampledX = eX
+  sampledY = eY
+  
+  if(sampled > MIN_SAMPLE & ratio != 1.0)
+  {
+    dist = max(eY) # num classes (one-hot encoded eY) 
+    
+    if((nrow(eY) > 1) & (dist < 10))  # for classification
+    {
+      XY = order(target = cbind(eY, eX),  by = 1, decreasing=FALSE, index.return=FALSE)
+      # get the class count
+      classes = table(eY, 1)
+      # TODO vectorize extraction compute extraction vector
+      start_class = 1
+      out_s = 1 
+      out_e = 0
+      end_class = 0
+      out = matrix(0, sampled, ncol(XY))
+      classes_ratio = floor(classes*ratio)
+      for(i in 1:nrow(classes)) {
+        end_class = end_class + as.scalar(classes[i])
+        class_t = XY[start_class:end_class, ]
+        out_e = out_e + as.scalar(classes_ratio[i]) 
+        out[out_s:out_e, ] = class_t[1:as.scalar(classes_ratio[i]), ] 
+        out_s = out_e + 1
+        start_class = end_class + 1
+      }
+      out = removeEmpty(target = out, margin = "rows")
+      sampledY = out[, 1]
+      sampledX = out[, 2:ncol(out)]
+    }
+    else if(nrow(eY) > 1 & (dist > 10)) { # regression
+      sampledX = eX[1:sampled, ]
+      sampledY = eY[1:sampled, ]
+    }
+    else if(nrow(eY) == 1) { # TODO ?
+      sampledX =  eX[1:sampled, ]
+      sampledY = eY 
+    }
+  }
+}
+
+# #######################################################################
+# # Wrapper of transformencode OHE call, to call inside eval as a function
+# # Inputs: The input dataset X, and  mask of the columns
+# # Output: OHEd matrix X
+# #######################################################################
+
+dummycoding = function(Matrix[Double] X, Matrix[Double] mask)
+return (Matrix[Double] dX_train) {
+
+  if(sum(mask) > 0)
+  {
+    X = replace(target=X, pattern=NaN, replacement=1)
+    idx = vectorToCsv(mask)
+    # specifications for one-hot encoding of categorical features
+    jspecDC = "{ids:true, dummycode:["+idx+"]}";
+    # OHE of categorical features
+    [dX_train, dM] = transformencode(target=as.frame(X), spec=jspecDC);
+  }
+  else dX_train = X
+}
+
+
+#####################################
+# The function will check if the pipeline have zero hyper-parameters
+# then it should not use more resource iterations and should be executed once
+######################################
+isResourceOptimal = function(List[Unknown] param, Boolean verbose)
+return(Boolean validForResources) 
+{
+  validForResources = FALSE
+
+  count = 0
+  for(i in 1:length(param))
+  {
+    hp = as.matrix(param[i])
+    if(ncol(hp) > 4)
+      count += 1
+  }
+  validForResources = count > 0
+}
+
+
+#####################################
+# The function will apply a pipeline of string processing primitives on dirty data
+######################################
+stringProcessing = function(Frame[Unknown] data, Matrix[Double] mask, 
+  Frame[String] schema, Boolean CorrectTypos, List[Unknown] ctx = list(prefix="--"))
+return(Frame[Unknown] processedData, Matrix[Double] M)
+{ 
+  M = mask
+  prefix = as.scalar(ctx["prefix"]);
+  # step 1 fix swap values
+  print(prefix+" value swap fixing");
+  data = valueSwap(data, schema)
+  
+  # step 2 fix invalid lengths
+  print(prefix+" fixing invalid lengths between 5th and 95th quantile");
+  q0 = 0.05
+  q1 = 0.95
+  [data, M] = fixInvalidLengths(data, q0, q1)
+  
+  # step 3 drop invalid types
+  print(prefix+" drop values with type mismatch");
+  data = dropInvalidType(data, schema)
+  
+  # step 4 do the case transformations
+  print(prefix+" convert strings to lower case");
+  for(i in 1:ncol(mask))
+    if(as.scalar(schema[1,i]) == "STRING")
+      data[, i] = map(data[, i], "x -> x.toLowerCase()")
+  
+  # step 5 typo correction
+  if(CorrectTypos)
+  {
+    # recode data to get null mask
+    if(sum(mask) > 0) {
+      # always recode the label
+      index = vectorToCsv(mask)
+      jspecR = "{ids:true, recode:["+index+"]}"
+      [eX, X_meta] = transformencode(target=data, spec=jspecR);
+    } 
+    # if no categorical value exist then just cast the frame into matrix
+    else
+      eX = as.matrix(data)
+    nullMask = is.na(eX)
+    print(prefix+" correct typos in strings");
+    # fix the typos
+    for(i in 1:ncol(schema))
+      if(as.scalar(schema[1,i]) == "STRING")
+        data[, i] = correctTypos(data[, i], nullMask[, i], 0.2, 0.9, FALSE, TRUE, FALSE);
+  }
+  # step 6 porter stemming on all features
+  print(prefix+" porter-stemming on all features");
+  data = map(data, "x -> PorterStemmer.stem(x)")
+  
+  # TODO add deduplication
+  print(prefix+" deduplication via entity resolution");
+  
+  processedData = data
+}
+
+#####################################
+# Customized grid search for cleaning pipelines 
+######################################
+topk_gridSearch = function(Matrix[Double] X, Matrix[Double] y, Matrix[Double] Xtest=as.matrix(0), Matrix[Double] ytest=as.matrix(0), String train, String predict,
+    Integer numB=ncol(X), List[String] params, List[Unknown] paramValues,
+    List[Unknown] trainArgs = list(), List[Unknown] predictArgs = list(),
+    Boolean cv = FALSE, Integer cvk = 5, Boolean verbose = TRUE)
+  return (Matrix[Double] B, Frame[Unknown] opt)
+{
+  # Step 0) handling default arguments, which require access to passed data
+  if( length(trainArgs) == 0 )
+    trainArgs = list(X=X, y=y, icpt=0, reg=-1, tol=-1, maxi=-1, verbose=FALSE);
+  if( length(predictArgs) == 0 )
+    predictArgs = list(Xtest, ytest);
+  if( cv & cvk <= 1 ) {
+    print("gridSearch: called with cv=TRUE but cvk="+cvk+", set to default cvk=5.")
+    cvk = 5;
+  }
+
+  # Step 1) preparation of parameters, lengths, and values in convenient form
+  numParams = length(params);
+  paramLens = matrix(0, numParams, 1);
+  for( j in 1:numParams ) {
+    vect = as.matrix(paramValues[j,1]);
+    paramLens[j,1] = nrow(vect);
+  }
+  paramVals = matrix(0, numParams, max(paramLens));
+  for( j in 1:numParams ) {
+    vect = as.matrix(paramValues[j,1]);
+    paramVals[j,1:nrow(vect)] = t(vect);
+  }
+  cumLens = rev(cumprod(rev(paramLens))/rev(paramLens));
+  numConfigs = prod(paramLens);
+
+  # Step 2) materialize hyper-parameter combinations
+  # (simplify debugging and compared to compute negligible)
+  HP = matrix(0, numConfigs, numParams);
+  parfor( i in 1:nrow(HP) ) {
+    for( j in 1:numParams )
+      HP[i,j] = paramVals[j,as.scalar(((i-1)/cumLens[j,1])%%paramLens[j,1]+1)];
+  }
+
+  if( verbose ) {
+    print("GridSeach: Number of hyper-parameters: \n"+toString(paramLens));
+    print("GridSeach: Hyper-parameter combinations: \n"+toString(HP));
+  }
+
+  # Step 3) training/scoring of parameter combinations
+  Rbeta = matrix(0, nrow(HP), numB);
+  Rloss = matrix(0, nrow(HP), 1);
+
+  # with cross-validation
+  if( cv & train == "lm") {
+    # a) create folds
+    foldsX = list(); foldsY = list();
+    fs = ceil(nrow(X)/cvk);
+    for( k in 0:(cvk-1) ) {
+      foldsX = append(foldsX, X[(k*fs+1):min((cvk+1)*fs,nrow(X)),]);
+      foldsY = append(foldsY, y[(k*fs+1):min((cvk+1)*fs,nrow(y)),]);
+    }
+    parfor( i in 1:nrow(HP) ) {
+      # a) replace training arguments
+      ltrainArgs = trainArgs; 
+      lpredictArgs = predictArgs;
+      for( j in 1:numParams )
+        ltrainArgs[as.scalar(params[j])] = as.scalar(HP[i,j]);
+      # b) cross-validated training/scoring and write-back
+      cvbeta = matrix(0,1,numB);
+      cvloss = matrix(0,1,1);
+      for( k in 1:cvk ) {
+        [tmpX, testX] = remove(foldsX, k);
+        [tmpy, testy] = remove(foldsY, k);
+        ltrainArgs['X'] = rbind(tmpX);
+        ltrainArgs['y'] = rbind(tmpy);
+        lbeta = t(eval(train, ltrainArgs));
+        cvbeta[,1:ncol(lbeta)] = cvbeta[,1:ncol(lbeta)] + lbeta;
+        lpredict = list(as.matrix(testX), as.matrix(testy), t(lbeta), as.scalar(ltrainArgs['icpt']))
+        cvloss += eval(predict, lpredict);
+      }
+      Rbeta[i,] = cvbeta / cvk; # model averaging
+      Rloss[i,] = cvloss / cvk;
+    }
+  }
+  else if(cv & train == "multiLogReg")
+  {
+    parfor( i in 1:nrow(HP) ) {
+      # a) replace training arguments
+      # acc = utils::crossVML(X, y, cvk, HP[i]);
+      k = cvk
+      dataList = list()
+      testL = list()
+      data = order(target = cbind(y, X),  by = 1, decreasing=FALSE, index.return=FALSE)
+      classes = table(data[, 1], 1)
+      ins_per_fold = classes/k
+      start_fold = matrix(1, rows=nrow(ins_per_fold), cols=1)
+      fold_idxes = cbind(start_fold, ins_per_fold)
+
+      start_i = 0; end_i = 0; idx_fold = 1;;
+      for(i in 1:k)
+      {
+        fold_i = matrix(0, 0, ncol(data))
+        start=0; end=0; 
+        for(j in 1:nrow(classes))
+        {
+          idx = as.scalar(classes[j, 1])
+          start = end + 1;
+          end = end + idx
+          class_j =  data[start:end, ]
+          start_i = as.scalar(fold_idxes[j, 1]);
+          end_i = as.scalar(fold_idxes[j, 2])
+          fold_i = rbind(fold_i, class_j[start_i:end_i, ])
+        }
+        dataList = append(dataList, fold_i)
+        fold_idxes[, 1] = fold_idxes[, 2] + 1
+        fold_idxes[, 2] += ins_per_fold
+      }
+
+      cvbeta = matrix(0,1,numB);
+      cvloss = matrix(0,1,1);
+      for(i in seq(1,k)) {
+        [trainList, hold_out] = remove(dataList, i)
+        trainset = rbind(trainList)
+        testset = as.matrix(hold_out)
+        trainX = trainset[, 2:ncol(trainset)]
+        trainy = trainset[, 1]
+        testsetX = testset[, 2:ncol(testset)]
+        testsety = testset[, 1]
+        lbeta = multiLogReg(X=trainX, Y=trainy, icpt=as.scalar(HP[1,1]), reg=as.scalar(HP[1,2]), tol=as.scalar(HP[1,3]), 
+          maxi=as.scalar(HP[1,4]), maxii=50, verbose=FALSE);
+        [prob, yhat, accuracy] = multiLogRegPredict(testsetX, lbeta, testsety, FALSE)
+        cvbeta += lbeta;
+        cvloss += as.matrix(accuracy);
+      }
+      # Rbeta[i,] = cvbeta / k;
+      Rloss[i,] = cvloss / k;
+    }
+  }
+  # without cross-validation
+  else {
+    parfor( i in 1:nrow(HP) ) {
+      # a) replace training arguments
+      ltrainArgs = trainArgs;
+      for( j in 1:numParams )
+        ltrainArgs[as.scalar(params[j])] = as.scalar(HP[i,j]);
+      # b) core training/scoring and write-back
+      lbeta = t(eval(train, ltrainArgs))
+      # Rbeta[i,1:ncol(lbeta)] = lbeta;
+      Rloss[i,] = eval(predict, append(predictArgs,t(lbeta)));
+    }
+  }
+
+  # Step 4) select best parameter combination
+  ix = as.scalar(rowIndexMin(t(Rloss)));
+  B = t(Rbeta[ix,]);       # optimal model
+  opt = as.frame(HP[ix,]); # optimal hyper-parameters
+}

@@ -19,14 +19,12 @@
 
 package org.apache.sysds.runtime.data;
 
-import java.io.Serializable;
 import java.util.Arrays;
 
 import org.apache.sysds.runtime.util.SortUtils;
 import org.apache.sysds.runtime.util.UtilFunctions;
 
-public final class SparseRowVector extends SparseRow implements Serializable 
-{
+public final class SparseRowVector extends SparseRow{
 	private static final long serialVersionUID = 2971077474424464992L;
 
 	//initial capacity of any created sparse row
@@ -197,6 +195,11 @@ public final class SparseRowVector extends SparseRow implements Serializable
 		return true; // nnz++
 	}
 	
+	public void setAtPos(int pos, int col, double v) {
+		indexes[pos] = col;
+		values[pos] = v;
+	}
+	
 	@Override
 	public boolean add(int col, double v) {
 		//early abort on zero (if no overwrite)
@@ -240,6 +243,12 @@ public final class SparseRowVector extends SparseRow implements Serializable
 		//search for existing col index
 		int index = Arrays.binarySearch(indexes, 0, size, col);
 		return (index >= 0) ? values[index] : 0;
+	}
+
+	public int getIndex(int col) {
+		//search for existing col index
+		int index = Arrays.binarySearch(indexes, 0, size, col);
+		return (index >= 0) ? index : -1;
 	}
 
 	public int searchIndexesFirstLTE(int col) {

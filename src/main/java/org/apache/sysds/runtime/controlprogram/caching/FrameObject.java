@@ -41,6 +41,7 @@ import org.apache.sysds.runtime.lineage.LineageItem;
 import org.apache.sysds.runtime.lineage.LineageRecomputeUtils;
 import org.apache.sysds.runtime.matrix.data.FrameBlock;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
+import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.runtime.meta.MetaData;
 import org.apache.sysds.runtime.meta.MetaDataFormat;
 import org.apache.sysds.runtime.util.UtilFunctions;
@@ -86,6 +87,12 @@ public class FrameObject extends CacheableData<FrameBlock>
 	 */
 	public FrameObject(FrameObject fo) {
 		super(fo);
+		
+		MetaDataFormat metaOld = (MetaDataFormat) fo.getMetaData();
+		_metaData = new MetaDataFormat(
+			new MatrixCharacteristics(metaOld.getDataCharacteristics()),
+			metaOld.getFileFormat());
+		_schema = fo._schema.clone();
 	}
 	
 	@Override
@@ -272,9 +279,11 @@ public class FrameObject extends CacheableData<FrameBlock>
 	protected void writeBlobToHDFS(String fname, String ofmt, int rep, FileFormatProperties fprop)
 		throws IOException, DMLRuntimeException 
 	{
-		FileFormat fmt = FileFormat.safeValueOf(ofmt);
+		MetaDataFormat iimd = (MetaDataFormat) _metaData;
+		FileFormat fmt = (ofmt != null ? FileFormat.safeValueOf(ofmt) : iimd.getFileFormat());
+		
 		FrameWriter writer = FrameWriterFactory.createFrameWriter(fmt, fprop);
-		writer.writeFrameToHDFS(_data, fname,  getNumRows(), getNumColumns());
+		writer.writeFrameToHDFS(_data, fname, getNumRows(), getNumColumns());
 	}
 
 	@Override

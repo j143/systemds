@@ -19,6 +19,22 @@
 
 package org.apache.sysds.runtime.matrix.data;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.stream.Collectors;
+
+import org.apache.commons.lang.NotImplementedException;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysds.runtime.data.DenseBlock;
@@ -38,20 +54,6 @@ import org.apache.sysds.runtime.util.DataConverter;
 import org.apache.sysds.runtime.util.SortUtils;
 import org.apache.sysds.runtime.util.UtilFunctions;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.stream.Collectors;
-
 /**
  * MB:
  * Library for selected matrix reorg operations including special cases
@@ -65,10 +67,12 @@ import java.util.stream.Collectors;
  *  - rmempty (remove empty)
  *  - rexpand (outer/table-seq expansion)
  */
-public class LibMatrixReorg 
-{
+public class LibMatrixReorg {
+
+	// private static final Log LOG = LogFactory.getLog(LibMatrixReorg.class.getName());
+
 	//minimum number of elements for multi-threaded execution
-	public static final long PAR_NUMCELL_THRESHOLD = 1024*1024; //1M
+	public static long PAR_NUMCELL_THRESHOLD = 1024*1024; //1M
 	
 	// SORTING threshold
 	public static final int PAR_NUMCELL_THRESHOLD_SORT = 1024;
@@ -126,6 +130,23 @@ public class LibMatrixReorg
 		}
 	}
 
+	public static MatrixBlock reorgInPlace(MatrixBlock in, ReorgOperator op){
+		ReorgType type = getReorgType(op);
+		switch (type){
+			case TRANSPOSE:
+				return transposeInPlace(in, op.getNumThreads());
+			case REV:
+			case SORT:
+				throw new DMLRuntimeException("Not implemented inplace: " + op.fn.getClass().getSimpleName());
+			default:
+				throw new DMLRuntimeException("Unsupported inplace reorg operator: " + op.fn.getClass().getSimpleName());
+		}
+	}
+
+	public static MatrixBlock transpose(MatrixBlock in){
+		return transpose(in, new MatrixBlock(in.getNumColumns(), in.getNumRows(), in.isInSparseFormat()));
+	}
+
 	public static MatrixBlock transpose( MatrixBlock in, MatrixBlock out ) {
 		//sparse-safe operation
 		if( in.isEmptyBlock(false) )
@@ -143,7 +164,7 @@ public class LibMatrixReorg
 			return out;
 		}
 		
-		//Timing time = new Timing(true);
+		// Timing time = new Timing(true);
 		
 		//allocate output arrays (if required)
 		if( out.sparse )
@@ -152,73 +173,121 @@ public class LibMatrixReorg
 			out.allocateDenseBlock(false);
 	
 		//execute transpose operation
+		boolean ultraSparse = (in.sparse && out.sparse && in.nonZeros < Math.max(in.rlen, in.clen));
 		if( !in.sparse && !out.sparse )
-			transposeDenseToDense( in, out, 0, in.rlen, 0, in.clen );
+			transposeDenseToDense(in, out, 0, in.rlen, 0, in.clen);
+		else if( ultraSparse )
+			transposeUltraSparse(in, out);
 		else if( in.sparse && out.sparse )
-			transposeSparseToSparse( in, out, 0, in.rlen, 0, in.clen, 
+			transposeSparseToSparse(in, out, 0, in.rlen, 0, in.clen, 
 				countNnzPerColumn(in, 0, in.rlen));
 		else if( in.sparse )
-			transposeSparseToDense( in, out, 0, in.rlen, 0, in.clen );
+			transposeSparseToDense(in, out, 0, in.rlen, 0, in.clen);
 		else
-			transposeDenseToSparse( in, out );
+			transposeDenseToSparse(in, out);
 		
-		//System.out.println("r' ("+in.rlen+", "+in.clen+", "+in.sparse+", "+out.sparse+") in "+time.stop()+" ms.");
+		// System.out.println("r' ("+in.rlen+", "+in.clen+", "+in.sparse+", "+out.sparse+") in "+time.stop()+" ms.");
 		
 		return out;
 	}
 
+	public static MatrixBlock transpose(MatrixBlock in, int k){
+		return transpose(in, new MatrixBlock(in.getNumColumns(), in.getNumRows(), in.isInSparseFormat()), k);
+	}
+	
 	public static MatrixBlock transpose( MatrixBlock in, MatrixBlock out, int k ) {
-		//redirect small or special cases to sequential execution
-		if( in.isEmptyBlock(false) || (in.rlen * in.clen < PAR_NUMCELL_THRESHOLD) || k == 1
-			|| (SHALLOW_COPY_REORG && !in.sparse && !out.sparse && (in.rlen==1 || in.clen==1) )
-			|| (in.sparse && !out.sparse && in.rlen==1) || (!in.sparse && out.sparse && in.rlen==1) 
-			|| (!in.sparse && out.sparse) || !out.isThreadSafe())
-		{
+		return transpose(in, out, k, false);
+	}
+	
+	public static MatrixBlock transpose(MatrixBlock in, MatrixBlock out, int k, boolean allowCSR) {
+		// redirect small or special cases to sequential execution
+		if(in.isEmptyBlock(false) || ((long) in.rlen * (long) in.clen < PAR_NUMCELL_THRESHOLD) || k == 1
+			|| (SHALLOW_COPY_REORG && !in.sparse && !out.sparse && (in.rlen == 1 || in.clen == 1))
+			|| (in.sparse && !out.sparse && in.rlen == 1) || (!in.sparse && out.sparse && in.rlen == 1)
+			|| (in.sparse && out.sparse && in.nonZeros < Math.max(in.rlen, in.clen)) //ultra-sparse
+			|| (!in.sparse && out.sparse) ) {
 			return transpose(in, out);
 		}
-		
-		//Timing time = new Timing(true);
-		
-		//set meta data and allocate output arrays (if required)
+		// set meta data and allocate output arrays (if required)
 		out.nonZeros = in.nonZeros;
-		if( out.sparse )
+		// CSR is only allowed in the transposed output if the number of non zeros is counted in the columns
+		allowCSR = allowCSR && out.nonZeros < (long) Integer.MAX_VALUE && in.clen <= 4096;
+		// Timing time = new Timing(true);
+
+		if(out.sparse && allowCSR) {
+			int size = (int) out.nonZeros;
+			out.sparseBlock = new SparseBlockCSR(in.getNumColumns(), size, size);
+		}
+		else if(out.sparse)
 			out.allocateSparseRowsBlock(false);
 		else
 			out.allocateDenseBlock(false);
-		
-		//core multi-threaded transpose
+
+		// core multi-threaded transpose
 		try {
 			ExecutorService pool = CommonThreadPool.get(k);
-			//pre-processing (compute nnz per column once for sparse)
+			// pre-processing (compute nnz per column once for sparse)
 			int[] cnt = null;
-			if( in.sparse && out.sparse ) {
+			// filter matrices with many columns since the CountNnzTask would return
+			// null if the number of columns is larger than threshold
+			if(in.sparse && out.sparse && in.clen <= 4096) {
+				
 				ArrayList<CountNnzTask> tasks = new ArrayList<>();
-				int blklen = (int)(Math.ceil((double)in.rlen/k));
-				for( int i=0; i<k & i*blklen<in.rlen; i++ )
-					tasks.add(new CountNnzTask(in, i*blklen, Math.min((i+1)*blklen, in.rlen)));
+				int blklen = (int) (Math.ceil((double) in.rlen / k));
+				for(int i = 0; i < k & i * blklen < in.rlen; i++)
+					tasks.add(new CountNnzTask(in, i * blklen, Math.min((i + 1) * blklen, in.rlen)));
 				List<Future<int[]>> rtasks = pool.invokeAll(tasks);
-				for( Future<int[]> rtask : rtasks )
+				for(Future<int[]> rtask : rtasks)
 					cnt = mergeNnzCounts(cnt, rtask.get());
-			} 
-			//compute actual transpose and check for errors
+
+				if(allowCSR) {
+					int[] outPtr = ((SparseBlockCSR) out.sparseBlock).rowPointers();
+					for(int i = 0; i < cnt.length; i++) {
+						// set out pointers to correct start of rows.
+						outPtr[i + 1] = outPtr[i] + cnt[i];
+						// set the cnt value to the new pointer to start of row in CSR
+						cnt[i] = outPtr[i];
+					}
+				}
+			}
+
+			// compute actual transpose and check for errors
 			ArrayList<TransposeTask> tasks = new ArrayList<>();
 			boolean row = (in.sparse || in.rlen >= in.clen) && !out.sparse;
 			int len = row ? in.rlen : in.clen;
-			int blklen = (int)(Math.ceil((double)len/k));
-			blklen += (blklen%8 != 0)?8-blklen%8:0;
-			for( int i=0; i<k & i*blklen<len; i++ )
-				tasks.add(new TransposeTask(in, out, row, i*blklen, Math.min((i+1)*blklen, len), cnt));
+			int blklen = (int) (Math.ceil((double) len / k));
+			blklen += (!out.sparse && (blklen % 8) != 0) ? 8 - blklen % 8 : 0;
+			blklen = (in.sparse) ? Math.max(blklen, 32) : blklen;
+			for(int i = 0; i < k & i * blklen < len; i++)
+				tasks.add(new TransposeTask(in, out, row, i * blklen, Math.min((i + 1) * blklen, len), cnt));
 			List<Future<Object>> taskret = pool.invokeAll(tasks);
 			pool.shutdown();
-			for( Future<Object> task : taskret )
+			for(Future<Object> task : taskret)
 				task.get();
 		}
 		catch(Exception ex) {
 			throw new DMLRuntimeException(ex);
 		}
+
+		// System.out.println("r' k="+k+" ("+in.rlen+", "+in.clen+", "+in.sparse+", "+out.sparse+") in "+time.stop()+" ms.");
 		
-		//System.out.println("r' k="+k+" ("+in.rlen+", "+in.clen+", "+in.sparse+", "+out.sparse+") in "+time.stop()+" ms.");
-		
+		return out;
+	}
+
+	public static MatrixBlock transposeInPlace(MatrixBlock in, int k){
+		// Timing time = new Timing(true);
+		MatrixBlock out = null;
+		if(in.isEmpty()) 
+			out = new MatrixBlock(in.getNumColumns(), in.getNumRows(), true);
+		else if(in.isInSparseFormat()) {
+			// If input is sparse use default implementation and allocate a new matrix.
+			out = transpose(in, new MatrixBlock(in.getNumColumns(), in.getNumRows(), true), k);
+		}
+		else {
+			transposeInPlaceDense(in, k);
+			out = in;
+		}
+		// System.out.println("r' in place k="+k+" ("+in.rlen+", "+in.clen+") in "+time.stop()+" ms.");
 		return out;
 	}
 
@@ -848,6 +917,18 @@ public class LibMatrixReorg
 		}
 	}
 
+	private static void transposeUltraSparse(MatrixBlock in, MatrixBlock out) {
+		//note: applied if nnz < max(rlen, clen) - so no cache blocking
+		// but basic, naive transposition in a single-threaded context
+		Iterator<IJV> iter = in.getSparseBlockIterator();
+		SparseBlock b = out.getSparseBlock();
+		while( iter.hasNext() ) {
+			IJV cell = iter.next();
+			b.append(cell.getJ(), cell.getI(), cell.getV());
+		}
+		out.setNonZeros(in.getNonZeros());
+	}
+	
 	private static void transposeSparseToSparse(MatrixBlock in, MatrixBlock out, int rl, int ru, int cl, int cu, int[] cnt)
 	{
 		//NOTE: called only in sequential or column-wise parallel execution
@@ -861,50 +942,148 @@ public class LibMatrixReorg
 		SparseBlock a = in.getSparseBlock();
 		SparseBlock c = out.getSparseBlock();
 
-		//allocate output sparse rows
-		if( cnt != null ) {
-			for( int i=cl; i<cu; i++ )
-				if( cnt[i] > 0 )
-					c.allocate(i, cnt[i]);
+		if( cu-cl == 1 ) { // SINGLE TARGET ROW
+			//number of columns <= num cores, use sequential scan over input
+			//and avoid cache blocking and temporary position maintenance
+			if( cnt[cl] > 0 )
+				c.allocate(cl, cnt[cl]);
+			
+			for( int i=rl; i<ru; i++ ) {
+				if( a.isEmpty(i) ) continue;
+				int apos = a.pos(i);
+				int alen = a.size(i);
+				int[] aix = a.indexes(i);
+				double[] avals = a.values(i);
+				for( int j=apos; j<apos+alen && aix[j]<=cl; j++ )
+					if( aix[j] == cl )
+						c.append(cl, i, avals[j]);
+			}
 		}
-		
-		//blocking according to typical L2 cache sizes w/ awareness of sparsity
-		final long xsp = (long)in.rlen*in.clen/in.nonZeros;
-		final int blocksizeI = Math.max(128, (int) (8*xsp));
-		final int blocksizeJ = Math.max(128, (int) (8*xsp));
-	
-		//temporary array for block boundaries (for preventing binary search) 
-		int[] ix = new int[Math.min(blocksizeI, ru-rl)];
-		
-		//blocked execution
-		for( int bi=rl; bi<ru; bi+=blocksizeI )
-		{
-			Arrays.fill(ix, 0);
-			//find column starting positions
-			int bimin = Math.min(bi+blocksizeI, ru);
-			if( cl > 0 ) {
-				for( int i=bi; i<bimin; i++ ) {
-					if( a.isEmpty(i) ) continue;
-					int j = a.posFIndexGTE(i, cl);
-					ix[i-bi] = (j>=0) ? j : a.size(i);
-				}
+		else { //GENERAL CASE
+			//allocate output sparse rows
+			if( cnt != null ) {
+				for( int i=cl; i<cu; i++ )
+					if( cnt[i] > 0 )
+						c.allocate(i, cnt[i]);
 			}
 			
-			for( int bj=cl; bj<cu; bj+=blocksizeJ ) {
-				int bjmin = Math.min(bj+blocksizeJ, cu);
-				//core block transpose operation
-				for( int i=bi; i<bimin; i++ ) {
-					if( a.isEmpty(i) ) continue;
-					int apos = a.pos(i);
-					int alen = a.size(i);
-					int[] aix = a.indexes(i);
-					double[] avals = a.values(i);
-					int j = ix[i-bi] + apos; //last block boundary
-					for( ; j<apos+alen && aix[j]<bjmin; j++ ) {
-						c.allocate(aix[j], ennz2, n2);
-						c.append(aix[j], i, avals[j]);
+			//blocking according to typical L2 cache sizes w/ awareness of sparsity
+			final long xsp = (long)in.rlen*in.clen/in.nonZeros;
+			final int blocksizeI = Math.max(128, (int) (8*xsp));
+			final int blocksizeJ = Math.max(128, (int) (8*xsp));
+		
+			//temporary array for block boundaries (for preventing binary search) 
+			int[] ix = new int[Math.min(blocksizeI, ru-rl)];
+			
+			//blocked execution
+			for( int bi=rl; bi<ru; bi+=blocksizeI )
+			{
+				Arrays.fill(ix, 0);
+				//find column starting positions
+				int bimin = Math.min(bi+blocksizeI, ru);
+				if( cl > 0 ) {
+					for( int i=bi; i<bimin; i++ ) {
+						if( a.isEmpty(i) ) continue;
+						int j = a.posFIndexGTE(i, cl);
+						ix[i-bi] = (j>=0) ? j : a.size(i);
 					}
-					ix[i-bi] = j - apos; //keep block boundary
+				}
+				
+				for( int bj=cl; bj<cu; bj+=blocksizeJ ) {
+					int bjmin = Math.min(bj+blocksizeJ, cu);
+					//core block transpose operation
+					for( int i=bi; i<bimin; i++ ) {
+						if( a.isEmpty(i) ) continue;
+						int apos = a.pos(i);
+						int alen = a.size(i);
+						int[] aix = a.indexes(i);
+						double[] avals = a.values(i);
+						int j = ix[i-bi] + apos; //last block boundary
+						for( ; j<apos+alen && aix[j]<bjmin; j++ ) {
+							c.allocate(aix[j], ennz2, n2);
+							c.append(aix[j], i, avals[j]);
+						}
+						ix[i-bi] = j - apos; //keep block boundary
+					}
+				}
+			}
+		}
+	}
+
+	private static void transposeSparseToSparseCSR(MatrixBlock in, MatrixBlock out, int rl, int ru, int cl, int cu,
+		int[] cnt) {
+
+		// NOTE: called only in sequential or column-wise parallel execution
+		if(rl > 0 || ru < in.rlen)
+			throw new RuntimeException("Unsupported row-parallel transposeSparseToSparse: " + rl + ", " + ru);
+
+		final SparseBlock a = in.getSparseBlock();
+		final SparseBlockCSR c = (SparseBlockCSR) out.getSparseBlock();
+
+		final int[] outIndexes = c.indexes();
+		final double[] outValues = c.values();
+
+		if(cu - cl == 1) {
+			int i = 0;
+			final int end = c.size(cl) + c.pos(cl);
+			int outPointer = cnt[cl];
+			while(outPointer < end) {
+				if(!a.isEmpty(i)) {
+					final int apos = a.pos(i);
+					final int alen = a.size(i);
+					final int[] aix = a.indexes(i);
+					final double[] avals = a.values(i);
+					for(int j = apos; j < apos + alen && aix[j] <= cl; j++)
+						if(aix[j] == cl) {
+							outIndexes[outPointer] = i;
+							outValues[outPointer] = avals[j];
+							outPointer++;
+						}
+				}
+				i++;
+			}
+		}
+		else {
+			final long xsp = (long) in.rlen * in.clen / in.nonZeros;
+			final int blocksizeI = Math.max(128, (int) (8 * xsp));
+			final int blocksizeJ = Math.max(128, (int) (8 * xsp));
+
+			// temporary array for block boundaries (for preventing binary search)
+			int[] ix = new int[Math.min(blocksizeI, ru - rl)];
+
+			// blocked execution
+			for(int bi = rl; bi < ru; bi += blocksizeI) {
+				Arrays.fill(ix, 0);
+				// find column starting positions
+				int bimin = Math.min(bi + blocksizeI, ru);
+				if(cl > 0) {
+					for(int i = bi; i < bimin; i++) {
+						if(a.isEmpty(i))
+							continue;
+						int j = a.posFIndexGTE(i, cl);
+						ix[i - bi] = (j >= 0) ? j : a.size(i);
+					}
+				}
+
+				for(int bj = cl; bj < cu; bj += blocksizeJ) {
+					int bjmin = Math.min(bj + blocksizeJ, cu);
+					// core block transpose operation
+					for(int i = bi; i < bimin; i++) {
+						if(a.isEmpty(i))
+							continue;
+						int apos = a.pos(i);
+						int alen = a.size(i);
+						int[] aix = a.indexes(i);
+						double[] avals = a.values(i);
+						int j = ix[i - bi] + apos; // last block boundary
+						for(; j < apos + alen && aix[j] < bjmin; j++) {
+							int pointer = cnt[aix[j]];
+							cnt[aix[j]]++;
+							outIndexes[pointer] = i;
+							outValues[pointer] = avals[j];
+						}
+						ix[i - bi] = j - apos; // keep block boundary
+					}
 				}
 			}
 		}
@@ -957,6 +1136,628 @@ public class LibMatrixReorg
 				}
 			}
 		}
+	}
+	
+	/**
+	 * Using C2R & R2C algorithm from PPOP 2014.
+	 * 
+	 * https://dl.acm.org/doi/pdf/10.1145/2692916.2555253
+	 * 
+	 * @param in The matrix to transpose in place.
+	 * @param k  The number of threads allowed to be used.
+	 */
+	private static void transposeInPlaceDense(MatrixBlock in, int k){
+		DenseBlock values = in.getDenseBlock();
+		if(values.numBlocks()>1)
+			throw new NotImplementedException("Not Implemented in place transpose with more than one block");
+		
+		// Swap rows and cols
+		final int cols = in.getNumRows();
+		final int rows = in.getNumColumns();
+		
+		if(cols == 1 || rows == 1){
+			values.setDims(new int[] {rows, cols});
+			in.setNumColumns(cols);
+			in.setNumRows(rows);
+			// swap rows and column numbers;
+		}
+		else if(cols == rows){
+			// If the number of rows equals the number of columns simply swap each element along the diagonal.
+			// This only results in half - number of diagonal elements swaps.
+			transposeInPlaceTrivial(in.getDenseBlockValues(), cols, k);
+		}
+		else {
+			if(cols<rows){
+				// important to set dims after
+				c2r(in, k);
+				values.setDims(new int[]{rows,cols});
+				in.setNumColumns(cols);
+				in.setNumRows(rows);
+			}
+			else{
+				// important to set dims before
+				values.setDims(new int[]{rows,cols});
+				in.setNumColumns(cols);
+				in.setNumRows(rows);
+				r2c(in, k);
+			}
+		}
+
+		
+	}
+
+	/** Thread local temporary double array.. */
+	private static ThreadLocal<double[]> memPool = new ThreadLocal<double[]>() {
+        @Override
+        protected double[] initialValue() {
+            return null;
+        }
+    };
+
+	/**
+	 * Only use if the number of rows and cols are equal
+	 * @param values The values in the dense matrix.
+	 * @param rowAndCols The number of rows & cols.
+	 * @param k The number of threads allowed to be used.
+	 */
+	private static void transposeInPlaceTrivial(double[] values, int rowAndCols, int k){
+		if(rowAndCols > 15){
+			try{
+				ExecutorService pool = CommonThreadPool.get(k);
+				ArrayList<TransposeInPlaceTrivialTask> tasks = new ArrayList<>();
+				int blklen = 128;
+				for(int i = 0; i * blklen < rowAndCols; i++){
+					for(int j = i; j * blklen < rowAndCols; j++){
+						tasks.add(new TransposeInPlaceTrivialTask(
+							i * blklen, Math.min((i+1) * blklen,rowAndCols),
+							j * blklen, Math.min((j+1) * blklen,rowAndCols), rowAndCols, values));
+					}
+				}
+	
+				List<Future<Object>> rtasks = pool.invokeAll(tasks);
+				pool.shutdown();
+				for(Future<Object> rt : rtasks)
+					rt.get();
+			}
+			catch(InterruptedException | ExecutionException ex) {
+				throw new DMLRuntimeException("Failed parallel transpose in place with equal number col and rows.", ex);
+			}
+		}else{
+			for(int rowidx = 0; rowidx < rowAndCols; rowidx++){
+				for(int colidx = rowidx+1; colidx < rowAndCols; colidx++){
+					swap(values, rowidx * rowAndCols + colidx, colidx * rowAndCols + rowidx);
+				}
+			}
+		}
+	}
+
+	private static class TransposeInPlaceTrivialTask implements Callable<Object>{
+		private final int _rowStart;
+		private final int _rowStop;
+		private final int _colStart;
+		private final int _colStop;
+		private final int _rowAndCols;
+		private final double[] _values;
+
+		TransposeInPlaceTrivialTask(int rowStart, int rowStop, int colStart, int colStop, int rowAndCols, double[] values){
+			_rowStart = rowStart;
+			_rowStop = rowStop;
+			_colStart = colStart;
+			_colStop = colStop;
+			_rowAndCols = rowAndCols;
+			_values = values;
+		}
+
+		@Override
+		public Object call() {
+			for(int rowidx = _rowStart; rowidx < _rowStop; rowidx++){
+				for(int colidx = Math.max(rowidx+1, _colStart); colidx < _colStop; colidx++){
+					swap(_values, rowidx * _rowAndCols + colidx, colidx * _rowAndCols + rowidx);
+				}
+			}
+			return null;
+		}
+	}
+
+	private static void swap(double[] values, int from, int to){
+		double tmp = values[from];
+		values[from] = values[to];
+		values[to] = tmp;
+	}
+
+	private static void c2r(MatrixBlock in, int k){
+		double[] A = in.getDenseBlockValues();
+		int m = in.getNumRows();
+		int n = in.getNumColumns();
+		int c = gcd(m,n);
+		int a = m/c;
+		int b = n/c;
+
+		// LOG.error("c2r");
+
+		double[] tmp = memPool.get();
+        if(tmp == null) {
+            memPool.set(new double[Math.max(m,n)]);
+            tmp = memPool.get();
+        }
+		
+		ExecutorService pool = CommonThreadPool.get(k);
+		ArrayList<Callable<Object>> tasks = new ArrayList<>();
+
+		// Column rotate Gather
+		if(c> 1){
+			if(m > 10 && n > 100){
+				try{
+					int blkz = Math.max((n - c)/k, 1);
+					for(int j = c; j * blkz< n; j++){
+						tasks.add(new rTask(A,j*blkz,Math.min((j+1) * blkz,n),b,n,m));
+					}
+					for(Future<Object> rt : pool.invokeAll(tasks))
+						rt.get();
+					tasks.clear();
+				}
+				catch(InterruptedException | ExecutionException ex) {
+					throw new DMLRuntimeException("Failed parallel c2r transpose in column rotate step", ex);
+				}
+			}
+			else {
+				for(int j = c; j< n; j++){
+					rj(tmp, A, j, b, n, m);
+				}
+			}
+		}
+
+		// Row shuffle Scatter
+		if(m > 10 && n > 100){
+			try{
+				int blkz = Math.max(m/k, 1);
+				for(int i = 0; i * blkz< m; i++){
+					tasks.add(new dTask(A,i*blkz,Math.min((i+1) * blkz,m),b,n,m));
+				}
+				for(Future<Object> rt : pool.invokeAll(tasks))
+					rt.get();
+				tasks.clear();
+			}
+			catch(InterruptedException | ExecutionException ex) {
+				throw new DMLRuntimeException("Failed parallel c2r transpose in row shuffle step", ex);
+			}
+		}
+		else{
+			for (int i = 0; i< m; i++){
+				di(tmp, A, i ,b, n, m);
+			}
+		}
+
+
+		// Column shuffle Gather
+		if(m > 10 && n > 100){
+			try{
+				int blkz = Math.max(n/k,1);
+				for(int j = 0; j * blkz< n; j++){
+					tasks.add(new sTask(A,j*blkz,Math.min((j+1) * blkz,n),a,n,m));
+				}
+				for(Future<Object> rt : pool.invokeAll(tasks))
+					rt.get();
+				tasks.clear();
+			}
+			catch(InterruptedException | ExecutionException ex) {
+				throw new DMLRuntimeException("Failed parallel c2r transpose in column shuffle", ex);
+			}
+		}
+		else {
+
+			for(int j = 0; j< n; j++){
+				sj(tmp, A, j, a, n, m);
+			}
+		}
+		memPool.remove();
+	}
+
+	private static void rj(double[] tmp, double[] A, int j, int b, int n, int m){
+		int part = j / b;
+		for (int i = 0; i< m; i++){
+			int rj = (i+part) % m;
+			tmp[i] = A[rj*n + j];
+		}
+		
+		for (int i = j, off = 0; i< m*n; i+= n, off++){
+			A[i] = tmp[off];
+		}
+	}
+
+	private static class rTask implements Callable<Object> {
+		final double[] _A;
+
+		final int _jStart;
+		final int _jEnd;
+		final int _b;
+		final int _n;
+		final int _m;
+
+		rTask(double[] A, int jStart, int jEnd, int b, int n, int m){
+			_A = A;
+			_jStart = jStart;
+			_jEnd = jEnd;
+			_b = b;
+			_n = n;
+			_m = m;
+		}
+
+		@Override
+		public Object call(){
+			double[] tmp = memPool.get();
+			if(tmp == null) {
+				memPool.set(new double[Math.max(_m,_n)]);
+				tmp = memPool.get();
+			}
+			for( int j = _jStart; j< _jEnd; j++){
+
+				rj(tmp, _A, j, _b, _n, _m);
+			}
+			return null;
+		}
+	}
+
+	private static void di(double[] tmp, double[] A, int i, int b, int n, int m){
+		int off = i*n;
+		for(int j = 0; j< n; j++, off++){
+			int dij =((i + j/b) % m + j*m) % n;
+			tmp[dij] = A[off];
+		}
+		
+		System.arraycopy(tmp, 0, A, i*n, n);
+
+	}
+
+	private static class dTask implements Callable<Object>{
+		final double[] _A;
+
+		final int _iStart;
+		final int _iEnd;
+		final int _b;
+		final int _n;
+		final int _m;
+
+		dTask(double[] A, int iStart, int iEnd, int b, int n, int m){
+			_A = A;
+			_iStart = iStart;
+			_iEnd = iEnd;
+			_b = b;
+			_n = n;
+			_m = m;
+		}
+
+		@Override
+		public Object call(){
+			double[] tmp = memPool.get();
+			if(tmp == null) {
+				memPool.set(new double[Math.max(_m,_n)]);
+				tmp = memPool.get();
+			}
+
+			for (int i = _iStart; i< _iEnd; i++){
+
+				di(tmp, _A, i, _b, _n, _m);
+			}
+			return null;
+		}
+	}
+
+	private static void sj(double[] tmp, double[] A, int j, int a, int n, int m){
+
+		for (int i = 0; i< m; i++){
+			int sji = ((j + i*n - i/a) % m )* n;
+			tmp[i] = A[sji + j];
+		}
+
+		for (int i = j, off = 0; i< m * n; i += n, off ++){
+			A[i] = tmp[off];
+			
+		}
+	}
+
+	private static class sTask implements Callable<Object>{
+		final double[] _A;
+
+		// final int _j;
+		final int _jStart;
+		final int _jEnd;
+		final int _a;
+		final int _n;
+		final int _m;
+
+		sTask(double[] A, int jStart, int jEnd, int a, int n, int m){
+			_A = A;
+			_jStart = jStart;
+			_jEnd = jEnd;
+			_a = a;
+			_n = n;
+			_m = m;
+		}
+
+		@Override
+		public Object call(){
+			double[] tmp = memPool.get();
+			if(tmp == null) {
+				memPool.set(new double[Math.max(_m,_n)]);
+				tmp = memPool.get();
+			}
+			for( int j = _jStart; j< _jEnd; j++){
+
+				sj(tmp, _A, j, _a, _n, _m);
+			}
+			return null;
+		}
+	}
+
+	private static void r2c(MatrixBlock in, int k){
+		double[] A = in.getDenseBlockValues();
+		int m = in.getNumRows();
+		int n = in.getNumColumns();
+		int c = gcd(m,n);
+		int a = m/c;
+		int b = n/c;
+		int a_inv = modInverse(a,b);
+
+		double[] tmp = memPool.get();
+        if(tmp == null) {
+            memPool.set(new double[Math.max(m,n)]);
+            tmp = memPool.get();
+        }
+
+		ExecutorService pool = CommonThreadPool.get(k);
+		ArrayList<Callable<Object>> tasks = new ArrayList<>();
+
+		if(m > 10 && n > 100){
+			try{
+				int blkz = Math.max(n/k,1);
+				for(int j = 0; j * blkz< n; j++){
+					tasks.add(new s_invTask(A,j*blkz,Math.min((j+1) * blkz,n),a,n,m));
+				}
+				for(Future<Object> rt : pool.invokeAll(tasks))
+					rt.get();
+				tasks.clear();
+			}
+			catch(InterruptedException | ExecutionException ex) {
+				throw new DMLRuntimeException("Failed parallel r2c transpose in place in inverse colum shuffle.", ex);
+			}
+		}
+		else {
+			for(int j = 0; j< n; j++){
+				sj_inv(tmp, A, j, a, n, m);
+			}
+		}
+
+		if(m > 10 && n > 100){
+			try{
+				int blkz = Math.max(m/k,1);
+				for(int i = 0; i * blkz< m; i++){
+					tasks.add(new d_invTask(A,i*blkz,Math.min((i+1) * blkz,m), a_inv, b, c, n, m));
+				}
+				for(Future<Object> rt : pool.invokeAll(tasks))
+					rt.get();
+				tasks.clear();
+			}
+			catch(InterruptedException | ExecutionException ex) {
+				throw new DMLRuntimeException("Failed parallel r2c transpose in placein inverse row shuffle step.", ex);
+			}
+		}
+		else{
+			if( b * b < 0){
+				// if there is a risk for overflow use the safe method.
+				for (int i = 0; i< m; i++)
+					di_inv_safe(tmp, A, i, a_inv, b, c, n, m);
+			}
+			else{
+				for (int i = 0; i< m; i++)
+					di_inv(tmp, A, i, a_inv, b, c, n, m);
+			}
+
+		}
+
+		if(c > 1){
+			if(m > 10 && n > 100){
+				try{
+					int blkz = Math.max((n - c)/k,1);
+					for(int j = c; j * blkz< n; j++){
+						tasks.add(new r_invTask(A,j*blkz,Math.min((j+1) * blkz,n),b,n,m));
+					}
+					for(Future<Object> rt : pool.invokeAll(tasks))
+						rt.get();
+					tasks.clear();
+				}
+				catch(InterruptedException | ExecutionException ex) {
+					throw new DMLRuntimeException("Failed parallel r2c transpose in place inverse column rotate step.", ex);
+				}
+			}
+			else {
+
+				for(int j = c; j< n; j++){
+					rj_inv(tmp, A, j, b, n,m);
+				}
+			}
+		}
+
+		memPool.remove();
+	}
+
+	private static void sj_inv(double[] tmp, double[] A, int j, int a, int n, int m){
+			// This deviate from the paper, since this implementation
+			// is leveraging the location switch by not assigning into 
+			// the temp array, in order, but based on which elements to shift.
+			for (int i = 0, off = 0; i< m * n; i+= n, off++){
+				int sji = ((j + i - (off/a)) % m );
+				tmp[sji] = A[i + j];
+			}
+			// LOG.error(Arrays.toString(sjiList));
+			for (int i = j, off = 0; i< m * n; i+= n, off++){
+				A[i] = tmp[off];
+			}
+	}
+
+	private static class s_invTask implements Callable<Object>{
+		final double[] _A;
+
+		// final int _j;
+		final int _jStart;
+		final int _jEnd;
+		final int _a;
+		final int _n;
+		final int _m;
+
+		s_invTask(double[] A, int jStart, int jEnd, int a, int n, int m){
+			_A = A;
+			_jStart = jStart;
+			_jEnd = jEnd;
+			_a = a;
+			_n = n;
+			_m = m;
+		}
+
+		@Override
+		public Object call(){
+			double[] tmp = memPool.get();
+			if(tmp == null) {
+				memPool.set(new double[Math.max(_m,_n)]);
+				tmp = memPool.get();
+			}
+			for( int j = _jStart; j< _jEnd; j++){
+
+				sj_inv(tmp, _A, j, _a, _n, _m);
+			}
+			return null;
+		}
+	}
+
+	private static void di_inv(double[] tmp, double[] A, int i, int a_inv, int b, int c, int n, int m){
+		int off = i*n;
+		final int tmpIC = i + c;
+		final int tmpIN = i * (n - 1);
+		for(int j = 0; j < n; j++, off++){
+			int f = (tmpIC - (j % c ) <= m) ? j + tmpIN : j + tmpIN +  m;
+			int dij_inverse = ((a_inv % b)  * ((f/c) % b)) % b  + (f % c) * b;
+
+			tmp[dij_inverse] = A[off];
+		}
+	
+		System.arraycopy(tmp, 0, A, i*n, n);
+	}
+
+	private static void di_inv_safe(double[] tmp, double[] A, int i, int a_inv, int b, int c, int n, int m){
+		int off = i*n;
+		final int tmpIC = i + c;
+		final int tmpIN = i * (n - 1);
+		for(int j = 0; j < n; j++, off++){
+			int f = (tmpIC - (j % c ) <= m) ? j + tmpIN : j + tmpIN +  m;
+			int dij_inverse = ((int)((((long)(a_inv % b) * ((f/c) % b)) % b)) + (f % c) * b);
+			
+			tmp[dij_inverse] = A[off];
+		}
+
+		System.arraycopy(tmp, 0, A, i*n, n);
+	}
+
+	private static class d_invTask implements Callable<Object>{
+		final double[] _A;
+
+		final int _iStart;
+		final int _iEnd;
+		final int _a_inv;
+		final int _b;
+		final int _c;
+		final int _n;
+		final int _m;
+
+		d_invTask(double[] A, int iStart, int iEnd, int a_inv, int b, int c, int n, int m){
+			_A = A;
+			_iStart = iStart;
+			_iEnd = iEnd;
+			_a_inv = a_inv;
+			_b = b;
+			_c = c;
+			_n = n;
+			_m = m;
+		}
+
+		@Override
+		public Object call(){
+			double[] tmp = memPool.get();
+			if(tmp == null) {
+				memPool.set(new double[Math.max(_m,_n)]);
+				tmp = memPool.get();
+			}
+			// if( _b * _b < 0){
+				// if there is a risk for overflow use the safe method.
+				for (int i = _iStart; i< _iEnd; i++)
+					di_inv_safe(tmp, _A, i,_a_inv, _b, _c, _n, _m);
+			// }else{
+			// 	for (int i = _iStart; i< _iEnd; i++)
+			// 		di_inv(tmp, _A, i,_a_inv, _b, _c, _n, _m);
+			// }
+			return null;
+		}
+	}
+
+	private static void rj_inv(double[] tmp, double[] A, int j, int b, int n, int m){
+		int part = j/ b;
+		for (int i = 0; i< m; i++){
+			int rj = (i-part) % m;
+			if(rj < 0)
+				rj += m;
+			tmp[i] = A[rj*n + j];
+		}
+		for (int i = j, off = 0; i< m * n; i+= n, off++){
+			A[i] = tmp[off];
+		}
+	}
+
+	private static class r_invTask implements Callable<Object>{
+		final double[] _A;
+
+		// final int _j;
+		final int _jStart;
+		final int _jEnd;
+		final int _b;
+		final int _n;
+		final int _m;
+
+		r_invTask(double[] A, int jStart, int jEnd, int b, int n, int m){
+			_A = A;
+			_jStart = jStart;
+			_jEnd = jEnd;
+			_b = b;
+			_n = n;
+			_m = m;
+		}
+
+		@Override
+		public Object call(){
+			double[] tmp = memPool.get();
+			if(tmp == null) {
+				memPool.set(new double[Math.max(_m,_n)]);
+				tmp = memPool.get();
+			}
+			for( int j = _jStart; j< _jEnd; j++){
+				rj_inv(tmp, _A, j, _b, _n, _m);
+			}
+			return null;
+		}
+	}
+
+	private static int modInverse(int a , int m){
+		a = a % m; 
+        for (int x = 1; x < m; x++) 
+            if ((a * x) % m == 1) 
+                return x; 
+		return 1; 
+		// TODO use optimized mod inverse operation.
+		// This makes little differnece on overall algorithm performance
+		// performance of algorithm.
+
+	}
+
+	private static int gcd(int a, int b){
+		return a == 0 ? b : gcd(b % a, a);
 	}
 
 	static void transposeRow( double[] a, double[] c, int aix, int cix, int n2, int len ) {
@@ -2364,6 +3165,8 @@ public class LibMatrixReorg
 			//execute transpose operation
 			if( !_in.sparse && !_out.sparse )
 				transposeDenseToDense( _in, _out, rl, ru, cl, cu );
+			else if( _in.sparse && _out.sparse && _out.sparseBlock instanceof SparseBlockCSR)
+				transposeSparseToSparseCSR(_in, _out, rl, ru, cl, cu, _cnt);
 			else if( _in.sparse && _out.sparse )
 				transposeSparseToSparse( _in, _out, rl, ru, cl, cu, _cnt );
 			else if( _in.sparse )

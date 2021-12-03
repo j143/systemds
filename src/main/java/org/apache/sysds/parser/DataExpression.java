@@ -19,25 +19,20 @@
 
 package org.apache.sysds.parser;
 
-import static org.apache.sysds.runtime.instructions.fed.InitFEDInstruction.FED_FRAME_IDENTIFIER;
-import static org.apache.sysds.runtime.instructions.fed.InitFEDInstruction.FED_MATRIX_IDENTIFIER;
-
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map.Entry;
 import java.util.Set;
 
+import static org.apache.sysds.runtime.instructions.fed.InitFEDInstruction.FED_FRAME_IDENTIFIER;
+import static org.apache.sysds.runtime.instructions.fed.InitFEDInstruction.FED_MATRIX_IDENTIFIER;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
-import org.apache.wink.json4j.JSONArray;
-import org.apache.wink.json4j.JSONObject;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.FileFormat;
@@ -51,12 +46,12 @@ import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
 import org.apache.sysds.runtime.io.FileFormatPropertiesMM;
 import org.apache.sysds.runtime.io.IOUtilFunctions;
+import org.apache.sysds.runtime.meta.MetaDataAll;
 import org.apache.sysds.runtime.privacy.PrivacyConstraint;
 import org.apache.sysds.runtime.privacy.PrivacyConstraint.PrivacyLevel;
 import org.apache.sysds.runtime.privacy.PrivacyUtils;
 import org.apache.sysds.runtime.util.HDFSTool;
 import org.apache.sysds.runtime.util.UtilFunctions;
-import org.apache.sysds.utils.JSONHelper;
 
 public class DataExpression extends DataIdentifier
 {
@@ -115,7 +110,11 @@ public class DataExpression extends DataIdentifier
 	//public static final String DELIM_RECODE = "recode";
 	public static final String DELIM_NA_STRINGS = "naStrings";
 	public static final String DELIM_NA_STRING_SEP = "\u00b7";
+	// Parameter names relevant to reading/writing delimited index/libsvmv files
+	public static final String LIBSVM_INDEX_DELIM = "indSep";
 
+	// Parameter names relevant to reading/writing dataset name/hdf5 files
+	public static final String HDF5_DATASET_NAME = "dataset";
 	
 	public static final String DELIM_SPARSE = "sparse";  // applicable only for write
 	
@@ -125,7 +124,10 @@ public class DataExpression extends DataIdentifier
 	
 	public static final Set<String> RESHAPE_VALID_PARAM_NAMES = new HashSet<>(
 		Arrays.asList(RAND_BY_ROW, RAND_DIMNAMES, RAND_DATA, RAND_ROWS, RAND_COLS, RAND_DIMS));
-	
+
+	public static final Set<String> FRAME_VALID_PARAM_NAMES = new HashSet<>(
+		Arrays.asList(SCHEMAPARAM, RAND_DATA, RAND_ROWS, RAND_COLS));
+
 	public static final Set<String> SQL_VALID_PARAM_NAMES = new HashSet<>(
 		Arrays.asList(SQL_CONN, SQL_USER, SQL_PASS, SQL_QUERY));
 	
@@ -139,6 +141,10 @@ public class DataExpression extends DataIdentifier
 			VALUETYPEPARAM, SCHEMAPARAM, DESCRIPTIONPARAM, AUTHORPARAM, CREATEDPARAM,
 			// Parameters related to delimited/csv files.
 			DELIM_FILL_VALUE, DELIM_DELIMITER, DELIM_FILL, DELIM_HAS_HEADER_ROW, DELIM_NA_STRINGS,
+			// Parameters related to delimited/libsvm files.
+			LIBSVM_INDEX_DELIM,
+			//Parameters related to dataset name/HDF4 files.
+			HDF5_DATASET_NAME,
 			// Parameters related to privacy
 			PRIVACY, FINE_GRAINED_PRIVACY));
 
@@ -147,7 +153,11 @@ public class DataExpression extends DataIdentifier
 		Arrays.asList(IO_FILENAME, READROWPARAM, READCOLPARAM, FORMAT_TYPE, DATATYPEPARAM,
 			VALUETYPEPARAM, SCHEMAPARAM, ROWBLOCKCOUNTPARAM, COLUMNBLOCKCOUNTPARAM, READNNZPARAM,
 			// Parameters related to delimited/csv files.
-			DELIM_FILL_VALUE, DELIM_DELIMITER, DELIM_FILL, DELIM_HAS_HEADER_ROW, DELIM_NA_STRINGS));
+			DELIM_FILL_VALUE, DELIM_DELIMITER, DELIM_FILL, DELIM_HAS_HEADER_ROW, DELIM_NA_STRINGS,
+			// Parameters related to delimited/libsvm files.
+			LIBSVM_INDEX_DELIM,
+			//Parameters related to dataset name/HDF4 files.
+			HDF5_DATASET_NAME));
 	
 	/* Default Values for delimited (CSV/LIBSVM) files */
 	public static final String  DEFAULT_DELIM_DELIMITER = ",";
@@ -156,7 +166,9 @@ public class DataExpression extends DataIdentifier
 	public static final double  DEFAULT_DELIM_FILL_VALUE = 0.0;
 	public static final boolean DEFAULT_DELIM_SPARSE = false;
 	public static final String  DEFAULT_NA_STRINGS = "";
-	
+	public static final String  DEFAULT_SCHEMAPARAM = "NULL";
+	public static final String DEFAULT_LIBSVM_INDEX_DELIM = ":";
+
 	private DataOp _opcode;
 	private HashMap<String, Expression> _varParams;
 	private boolean _strInit = false; //string initialize
@@ -186,309 +198,361 @@ public class DataExpression extends DataIdentifier
 				+ passedParamExprs + " " + parseInfo + " " + errorListener);
 		}
 		// check if the function name is built-in function
-		//	 (assign built-in function op if function is built-in)
-		Expression.DataOp dop;
+		// (assign built-in function op if function is built-in)
 		DataExpression dataExpr = null;
-		if (functionName.equals("read") || functionName.equals("readMM") || functionName.equals("read.csv")) {
-			dop = Expression.DataOp.READ;
-			dataExpr = new DataExpression(dop, new HashMap<String, Expression>(), parseInfo);
+		if (functionName.equals("read") || functionName.equals("readMM") || functionName.equals("read.csv"))
+			dataExpr = processReadDataExpression(functionName, passedParamExprs, errorListener, parseInfo);
+		else if (functionName.equalsIgnoreCase("rand"))
+			dataExpr = processRandDataExpression(functionName, passedParamExprs, errorListener, parseInfo);
+		else if (functionName.equals("matrix"))
+			dataExpr = processMatrixExpression(functionName, passedParamExprs, errorListener, parseInfo);
+		else if (functionName.equals("frame"))
+			dataExpr = processFrameExpression(functionName, passedParamExprs, errorListener, parseInfo);
+		else if (functionName.equals("tensor"))
+			dataExpr = processTensorExpression(functionName, passedParamExprs, errorListener, parseInfo);
+		else if (functionName.equals("sql"))
+			dataExpr = processSQLExpression(functionName, passedParamExprs, errorListener, parseInfo);
+		else if (functionName.equals("federated"))
+			dataExpr = processFederatedExpression(functionName, passedParamExprs, errorListener, parseInfo);
+		
+		if (dataExpr != null)
+			dataExpr.setParseInfo(parseInfo);
+		return dataExpr;
+	}
+	
+	private static DataExpression processReadDataExpression(String functionName,
+		List<ParameterExpression> passedParamExprs, CustomErrorListener errorListener, ParseInfo parseInfo)
+	{
+		DataExpression dataExpr = new DataExpression(DataOp.READ, new HashMap<>(), parseInfo);
+		if (functionName.equals("readMM"))
+			dataExpr.addVarParam(DataExpression.FORMAT_TYPE,
+				new StringIdentifier(FileFormat.MM.toString(), parseInfo));
 
-			if (functionName.equals("readMM"))
-				dataExpr.addVarParam(DataExpression.FORMAT_TYPE,
-					new StringIdentifier(FileFormat.MM.toString(), parseInfo));
+		if (functionName.equals("read.csv"))
+			dataExpr.addVarParam(DataExpression.FORMAT_TYPE,
+				new StringIdentifier(FileFormat.CSV.toString(), parseInfo));
 
-			if (functionName.equals("read.csv"))
-				dataExpr.addVarParam(DataExpression.FORMAT_TYPE,
-					new StringIdentifier(FileFormat.CSV.toString(), parseInfo));
+		if (functionName.equals("read.libsvm"))
+			dataExpr.addVarParam(DataExpression.FORMAT_TYPE,
+				new StringIdentifier(FileFormat.LIBSVM.toString(), parseInfo));
 
-			if (functionName.equals("read.libsvm"))
-				dataExpr.addVarParam(DataExpression.FORMAT_TYPE,
-					new StringIdentifier(FileFormat.LIBSVM.toString(), parseInfo));
-
-			// validate the filename is the first parameter
-			if (passedParamExprs.size() < 1){
-				errorListener.validationError(parseInfo, "read method must have at least filename parameter");
-				return null;
-			}
-			
-			ParameterExpression pexpr = (passedParamExprs.size() == 0) ? null : passedParamExprs.get(0);
-			
-			if ( (pexpr != null) &&  (!(pexpr.getName() == null) || (pexpr.getName() != null && pexpr.getName().equalsIgnoreCase(DataExpression.IO_FILENAME)))){
-				errorListener.validationError(parseInfo, "first parameter to read statement must be filename");
-				return null;
-			} else if( pexpr != null ){
-				dataExpr.addVarParam(DataExpression.IO_FILENAME, pexpr.getExpr());
-			}
-			
-			// validate all parameters are added only once and valid name
-			for (int i = 1; i < passedParamExprs.size(); i++){
-				String currName = passedParamExprs.get(i).getName();
-				Expression currExpr = passedParamExprs.get(i).getExpr();
-				
-				if (dataExpr.getVarParam(currName) != null){
-					errorListener.validationError(parseInfo, "attempted to add IOStatement parameter " + currName + " more than once");
-					return null;
-				}
-				// verify parameter names for read function
-				boolean isValidName = READ_VALID_PARAM_NAMES.contains(currName);
-
-				if (!isValidName){
-					errorListener.validationError(parseInfo, "attempted to add invalid read statement parameter " + currName);
-					return null;
-				}	
-				dataExpr.addVarParam(currName, currExpr);
-			}
-		}
-		else if (functionName.equalsIgnoreCase("rand")){
-			
-			dop = Expression.DataOp.RAND;
-			dataExpr = new DataExpression(dop, new HashMap<String, Expression>(), parseInfo);
-			
-			for (ParameterExpression currExpr : passedParamExprs){
-				String pname = currExpr.getName();
-				Expression pexpr = currExpr.getExpr();
-				if (pname == null){
-					errorListener.validationError(parseInfo, "for rand statement, all arguments must be named parameters");
-					return null;
-				}
-				dataExpr.addRandExprParam(pname, pexpr); 
-			}
-			dataExpr.setRandDefault();
+		// validate the filename is the first parameter
+		if (passedParamExprs.size() < 1){
+			errorListener.validationError(parseInfo, "read method must have at least filename parameter");
+			return null;
 		}
 		
-		else if (functionName.equals("matrix")){
-			dop = Expression.DataOp.MATRIX;
-			dataExpr = new DataExpression(dop, new HashMap<String, Expression>(), parseInfo);
+		ParameterExpression pexpr = (passedParamExprs.size() == 0) ? null : passedParamExprs.get(0);
 		
-			int namedParamCount = 0, unnamedParamCount = 0;
-			for (ParameterExpression currExpr : passedParamExprs) {
-				if (currExpr.getName() == null)
-					unnamedParamCount++;
-				else
-					namedParamCount++;
+		if ( (pexpr != null) &&  (!(pexpr.getName() == null) || (pexpr.getName() != null && pexpr.getName().equalsIgnoreCase(DataExpression.IO_FILENAME)))){
+			errorListener.validationError(parseInfo, "first parameter to read statement must be filename");
+			return null;
+		} else if( pexpr != null ){
+			dataExpr.addVarParam(DataExpression.IO_FILENAME, pexpr.getExpr());
+		}
+		
+		// validate all parameters are added only once and valid name
+		for (int i = 1; i < passedParamExprs.size(); i++){
+			String currName = passedParamExprs.get(i).getName();
+			Expression currExpr = passedParamExprs.get(i).getExpr();
+			
+			if (dataExpr.getVarParam(currName) != null){
+				errorListener.validationError(parseInfo, "attempted to add IOStatement parameter " + currName + " more than once");
+				return null;
 			}
+			// verify parameter names for read function
+			boolean isValidName = READ_VALID_PARAM_NAMES.contains(currName);
 
-			// check whether named or unnamed parameters are used
-			if (passedParamExprs.size() < 3){
+			if (!isValidName){
+				errorListener.validationError(parseInfo, "attempted to add invalid read statement parameter " + currName);
+				return null;
+			}
+			dataExpr.addVarParam(currName, currExpr);
+		}
+		
+		return dataExpr;
+	}
+	
+	private static DataExpression processRandDataExpression(String functionName,
+		List<ParameterExpression> passedParamExprs, CustomErrorListener errorListener, ParseInfo parseInfo)
+	{
+		DataExpression dataExpr = new DataExpression(DataOp.RAND, new HashMap<>(), parseInfo);
+		
+		for (ParameterExpression currExpr : passedParamExprs){
+			String pname = currExpr.getName();
+			Expression pexpr = currExpr.getExpr();
+			if (pname == null){
+				errorListener.validationError(parseInfo, "for rand statement, all arguments must be named parameters");
+				return null;
+			}
+			dataExpr.addRandExprParam(pname, pexpr);
+		}
+		dataExpr.setRandDefault();
+		return dataExpr;
+	}
+	
+	private static DataExpression processMatrixExpression(String functionName,
+		List<ParameterExpression> passedParamExprs, CustomErrorListener errorListener, ParseInfo parseInfo)
+	{
+		DataExpression dataExpr = new DataExpression(DataOp.MATRIX, new HashMap<>(), parseInfo);
+		int namedParamCount = (int) passedParamExprs.stream().filter(p -> p.getName()!=null).count();
+		int unnamedParamCount = passedParamExprs.size() - namedParamCount;
+		
+		// check whether named or unnamed parameters are used
+		if (passedParamExprs.size() < 3){
+			errorListener.validationError(parseInfo, "for matrix statement, must specify at least 3 arguments: data, rows, cols");
+			return null;
+		}
+		
+		if (unnamedParamCount > 1){
+			if (namedParamCount > 0) {
+				errorListener.validationError(parseInfo, "for matrix statement, cannot mix named and unnamed parameters");
+				return null;
+			}
+			if (unnamedParamCount < 3) {
 				errorListener.validationError(parseInfo, "for matrix statement, must specify at least 3 arguments: data, rows, cols");
 				return null;
 			}
-			
-			if (unnamedParamCount > 1){
-				
-				if (namedParamCount > 0) {
-					errorListener.validationError(parseInfo, "for matrix statement, cannot mix named and unnamed parameters");
-					return null;
-				}
-				
-				if (unnamedParamCount < 3) {
-					errorListener.validationError(parseInfo, "for matrix statement, must specify at least 3 arguments: data, rows, cols");
-					return null;
-				}
-				
 
-				// assume: data, rows, cols, [byRow], [dimNames]
-				dataExpr.addMatrixExprParam(DataExpression.RAND_DATA,passedParamExprs.get(0).getExpr());
-				dataExpr.addMatrixExprParam(DataExpression.RAND_ROWS,passedParamExprs.get(1).getExpr());
-				dataExpr.addMatrixExprParam(DataExpression.RAND_COLS,passedParamExprs.get(2).getExpr());
-				
-				if (unnamedParamCount >= 4)
-					dataExpr.addMatrixExprParam(DataExpression.RAND_BY_ROW,passedParamExprs.get(3).getExpr());
-				
-				if (unnamedParamCount == 5)
-					dataExpr.addMatrixExprParam(DataExpression.RAND_DIMNAMES,passedParamExprs.get(4).getExpr());
-				
-				if (unnamedParamCount > 5) {
-					errorListener.validationError(parseInfo, "for matrix statement, at most 5 arguments supported: data, rows, cols, byrow, dimname");
-					return null;
-				}
-				
+			// assume: data, rows, cols, [byRow], [dimNames]
+			dataExpr.addMatrixExprParam(DataExpression.RAND_DATA,passedParamExprs.get(0).getExpr());
+			dataExpr.addMatrixExprParam(DataExpression.RAND_ROWS,passedParamExprs.get(1).getExpr());
+			dataExpr.addMatrixExprParam(DataExpression.RAND_COLS,passedParamExprs.get(2).getExpr());
+			
+			if (unnamedParamCount >= 4)
+				dataExpr.addMatrixExprParam(DataExpression.RAND_BY_ROW,passedParamExprs.get(3).getExpr());
+			if (unnamedParamCount == 5)
+				dataExpr.addMatrixExprParam(DataExpression.RAND_DIMNAMES,passedParamExprs.get(4).getExpr());
+			if (unnamedParamCount > 5) {
+				errorListener.validationError(parseInfo, "for matrix statement, at most 5 arguments supported: data, rows, cols, byrow, dimname");
+				return null;
+			}
+		}
+		else {
+			// handle first parameter, which is data and may be unnamed
+			ParameterExpression firstParam = passedParamExprs.get(0);
+			if (firstParam.getName() != null && !firstParam.getName().equals(DataExpression.RAND_DATA)){
+				errorListener.validationError(parseInfo, "matrix method must have data parameter as first parameter or unnamed parameter");
+				return null;
 			} else {
-				// handle first parameter, which is data and may be unnamed
-				ParameterExpression firstParam = passedParamExprs.get(0);
-				if (firstParam.getName() != null && !firstParam.getName().equals(DataExpression.RAND_DATA)){
-					errorListener.validationError(parseInfo, "matrix method must have data parameter as first parameter or unnamed parameter");
+				dataExpr.addMatrixExprParam(DataExpression.RAND_DATA, passedParamExprs.get(0).getExpr());
+			}
+			
+			for (int i=1; i<passedParamExprs.size(); i++){
+				if (passedParamExprs.get(i).getName() == null){
+					errorListener.validationError(parseInfo, "for matrix statement, cannot mix named and unnamed parameters, only data parameter can be unnamed");
 					return null;
 				} else {
-					dataExpr.addMatrixExprParam(DataExpression.RAND_DATA, passedParamExprs.get(0).getExpr());
-				}
-				
-				for (int i=1; i<passedParamExprs.size(); i++){
-					if (passedParamExprs.get(i).getName() == null){
-						errorListener.validationError(parseInfo, "for matrix statement, cannot mix named and unnamed parameters, only data parameter can be unnammed");
-						return null;
-					} else {
-						dataExpr.addMatrixExprParam(passedParamExprs.get(i).getName(), passedParamExprs.get(i).getExpr());
-					}
+					dataExpr.addMatrixExprParam(passedParamExprs.get(i).getName(), passedParamExprs.get(i).getExpr());
 				}
 			}
-			dataExpr.setMatrixDefault();
 		}
-		else if (functionName.equals("tensor")){
-			dop = Expression.DataOp.TENSOR;
-			dataExpr = new DataExpression(dop, new HashMap<String, Expression>(), parseInfo);
-
-			int namedParamCount = 0, unnamedParamCount = 0;
-			for (ParameterExpression currExpr : passedParamExprs) {
-				if (currExpr.getName() == null)
-					unnamedParamCount++;
-				else
-					namedParamCount++;
-			}
-
-			// check whether named or unnamed parameters are used
-			if (passedParamExprs.size() < 2){
-				errorListener.validationError(parseInfo, "for tensor statement, must specify at least 2 arguments: data, dims[]");
-				return null;
-			}
-
-			if (unnamedParamCount > 1){
-				if (namedParamCount > 0) {
-					errorListener.validationError(parseInfo, "for tensor statement, cannot mix named and unnamed parameters");
-					return null;
-				}
-
-				// assume: data, dims[], [byRow], [dimNames]
-				dataExpr.addTensorExprParam(DataExpression.RAND_DATA,passedParamExprs.get(0).getExpr());
-				dataExpr.addTensorExprParam(DataExpression.RAND_DIMS,passedParamExprs.get(1).getExpr());
-
-				if (unnamedParamCount >= 3)
-					// TODO use byRow parameter
-					dataExpr.addTensorExprParam(DataExpression.RAND_BY_ROW,passedParamExprs.get(2).getExpr());
-
-				if (unnamedParamCount == 4)
-					dataExpr.addTensorExprParam(DataExpression.RAND_DIMNAMES,passedParamExprs.get(3).getExpr());
-
-				if (unnamedParamCount > 4) {
-					errorListener.validationError(parseInfo, "for tensor statement, at most 4 arguments supported: data, dims, byrow, dimname");
-					return null;
-				}
-
-			}
-			else {
-				// handle first parameter, which is data and may be unnamed
-				ParameterExpression firstParam = passedParamExprs.get(0);
-				if (firstParam.getName() != null && !firstParam.getName().equals(DataExpression.RAND_DATA)){
-					errorListener.validationError(parseInfo, "tensor method must have data parameter as first parameter or unnamed parameter");
-					return null;
-				}
-				else {
-					dataExpr.addTensorExprParam(DataExpression.RAND_DATA, passedParamExprs.get(0).getExpr());
-				}
-
-				for (int i=1; i<passedParamExprs.size(); i++){
-					if (passedParamExprs.get(i).getName() == null){
-						errorListener.validationError(parseInfo, "for tensor statement, cannot mix named and unnamed parameters, only data parameter can be unnammed");
-						return null;
-					}
-					else {
-						dataExpr.addTensorExprParam(passedParamExprs.get(i).getName(), passedParamExprs.get(i).getExpr());
-					}
-				}
-			}
-			dataExpr.setTensorDefault();
-		}
-		else if (functionName.equals("sql")) {
-			dop = DataOp.SQL;
-			dataExpr = new DataExpression(dop, new HashMap<>(), parseInfo);
-			
-			int namedParamCount = 0, unnamedParamCount = 0;
-			for (ParameterExpression currExpr : passedParamExprs) {
-				if (currExpr.getName() == null)
-					unnamedParamCount++;
-				else
-					namedParamCount++;
-			}
-			
-			// check whether named or unnamed parameters are used
-			if (passedParamExprs.size() < 2){
-				errorListener.validationError(parseInfo, "for sql statement, must specify at least 2 arguments: conn, query");
-				return null;
-			}
-			
-			if (unnamedParamCount > 0){
-				if (namedParamCount > 0) {
-					errorListener.validationError(parseInfo, "for sql statement, cannot mix named and unnamed parameters");
-					return null;
-				}
-				
-				if (unnamedParamCount == 2 || unnamedParamCount == 4 ) {
-					// assume: conn, query, [password, query]
-					dataExpr.addSqlExprParam(DataExpression.SQL_CONN, passedParamExprs.get(0).getExpr());
-					dataExpr.addSqlExprParam(DataExpression.SQL_QUERY, passedParamExprs.get(1).getExpr());
-					if (unnamedParamCount == 4) {
-						dataExpr.addSqlExprParam(DataExpression.SQL_PASS, passedParamExprs.get(2).getExpr());
-						dataExpr.addSqlExprParam(DataExpression.SQL_QUERY, passedParamExprs.get(3).getExpr());
-					}
-				}
-				else {
-					errorListener.validationError(parseInfo, "for sql statement, "
-						+ "at most 4 arguments supported: conn, user, password, query");
-					return null;
-				}
-				
-			}
-			else {
-				for (ParameterExpression passedParamExpr : passedParamExprs) {
-					dataExpr.addSqlExprParam(passedParamExpr.getName(), passedParamExpr.getExpr());
-				}
-			}
-			dataExpr.setSqlDefault();
-		}
-		else if (functionName.equals("federated")) {
-			dop = DataOp.FEDERATED;
-			dataExpr = new DataExpression(dop, new HashMap<>(), parseInfo);
-			int namedParamCount = 0, unnamedParamCount = 0;
-			for (ParameterExpression currExpr : passedParamExprs) {
-				if (currExpr.getName() == null)
-					unnamedParamCount++;
-				else
-					namedParamCount++;
-			}
-			if(passedParamExprs.size() < 2) {
-				errorListener.validationError(parseInfo,
-					"for federated statement, must specify at least 2 arguments: addresses, ranges");
-				return null;
-			}
-			if(unnamedParamCount > 0) {
-				if(namedParamCount > 0) {
-					errorListener.validationError(parseInfo,
-						"for federated statement, cannot mix named and unnamed parameters");
-					return null;
-				}
-				if(unnamedParamCount == 2) {
-					// first parameter addresses second are the ranges (type defaults to Matrix)
-					ParameterExpression param = passedParamExprs.get(0);
-					dataExpr.addFederatedExprParam(DataExpression.FED_ADDRESSES, param.getExpr());
-					param = passedParamExprs.get(1);
-					dataExpr.addFederatedExprParam(DataExpression.FED_RANGES, param.getExpr());
-				}
-				else if(unnamedParamCount == 3) {
-					ParameterExpression param = passedParamExprs.get(0);
-					dataExpr.addFederatedExprParam(DataExpression.FED_ADDRESSES, param.getExpr());
-					param = passedParamExprs.get(1);
-					dataExpr.addFederatedExprParam(DataExpression.FED_RANGES, param.getExpr());
-					param = passedParamExprs.get(2);
-					dataExpr.addFederatedExprParam(DataExpression.FED_TYPE, param.getExpr());
-				}
-				else {
-					errorListener.validationError(parseInfo,
-						"for federated statement, at most 3 arguments are supported: addresses, ranges, type");
-				}
-			}
-			else {
-				for (ParameterExpression passedParamExpr : passedParamExprs) {
-					dataExpr.addFederatedExprParam(passedParamExpr.getName(), passedParamExpr.getExpr());
-				}
-			}
-			dataExpr.setFederatedDefault();
-		}
-
-		if (dataExpr != null) {
-			dataExpr.setParseInfo(parseInfo);
-		}
+		dataExpr.setMatrixDefault();
 		return dataExpr;
-	} // end method getBuiltinFunctionExpression
+	}
+	
+	private static DataExpression processFrameExpression(String functionName,
+		List<ParameterExpression> passedParamExprs, CustomErrorListener errorListener, ParseInfo parseInfo)
+	{
+		DataExpression dataExpr = new DataExpression(DataOp.FRAME, new HashMap<>(), parseInfo);
+		int namedParamCount = (int) passedParamExprs.stream().filter(p -> p.getName()!=null).count();
+		int unnamedParamCount = passedParamExprs.size() - namedParamCount;
+
+		// check whether named or unnamed parameters are used
+		if (passedParamExprs.size() < 3) { // it will generate a frame with string schema
+			errorListener.validationError(parseInfo, "for frame statement, must specify at least 3 arguments: data, rows and cols");
+			return null;
+		}
+
+		if (unnamedParamCount > 1) {
+			if (namedParamCount > 0) {
+				errorListener.validationError(parseInfo, "for frame statement, cannot mix named and unnamed parameters");
+				return null;
+			}
+			if (unnamedParamCount < 3) {
+				errorListener.validationError(parseInfo, "for frame statement, must specify at least 3 arguments: rows, cols");
+				return null;
+			}
+			// assume: data, rows, cols, [Schema]
+			dataExpr.addFrameExprParam(DataExpression.RAND_DATA, passedParamExprs.get(0).getExpr());
+			dataExpr.addFrameExprParam(DataExpression.RAND_ROWS, passedParamExprs.get(1).getExpr());
+			dataExpr.addFrameExprParam(DataExpression.RAND_COLS, passedParamExprs.get(2).getExpr());
+
+			if (unnamedParamCount == 3)
+				dataExpr.addFrameExprParam(DataExpression.SCHEMAPARAM, passedParamExprs.get(3).getExpr());
+			if (unnamedParamCount > 3) {
+				errorListener.validationError(parseInfo, "for frame  statement, at most 4 arguments supported: data, rows, cols, schema");
+				return null;
+			}
+		}
+		else {
+			// handle first parameter, which is data and may be unnamed
+			ParameterExpression firstParam = passedParamExprs.get(0);
+			if (firstParam.getName() != null && !firstParam.getName().equals(DataExpression.RAND_DATA)){
+				errorListener.validationError(parseInfo, "frame method must have data parameter as first parameter or unnamed parameter");
+				return null;
+			}
+			else {
+				dataExpr.addFrameExprParam(DataExpression.RAND_DATA, passedParamExprs.get(0).getExpr());
+			}
+
+			for (int i=1; i<passedParamExprs.size(); i++){
+				if (passedParamExprs.get(i).getName() == null){
+					errorListener.validationError(parseInfo, "for frame statement, cannot mix named and unnamed parameters, only data parameter can be unnamed");
+					return null;
+				} else {
+					dataExpr.addFrameExprParam(passedParamExprs.get(i).getName(), passedParamExprs.get(i).getExpr());
+				}
+			}
+		}
+		dataExpr.setFrameDefault();
+		return dataExpr;
+	}
+	
+	private static DataExpression processTensorExpression(String functionName,
+		List<ParameterExpression> passedParamExprs, CustomErrorListener errorListener, ParseInfo parseInfo)
+	{
+		DataExpression dataExpr = new DataExpression(DataOp.TENSOR, new HashMap<>(), parseInfo);
+		int namedParamCount = (int) passedParamExprs.stream().filter(p -> p.getName()!=null).count();
+		int unnamedParamCount = passedParamExprs.size() - namedParamCount;
+
+		// check whether named or unnamed parameters are used
+		if (passedParamExprs.size() < 2){
+			errorListener.validationError(parseInfo, "for tensor statement, must specify at least 2 arguments: data, dims[]");
+			return null;
+		}
+		if (unnamedParamCount > 1){
+			if (namedParamCount > 0) {
+				errorListener.validationError(parseInfo, "for tensor statement, cannot mix named and unnamed parameters");
+				return null;
+			}
+
+			// assume: data, dims[], [byRow], [dimNames]
+			dataExpr.addTensorExprParam(DataExpression.RAND_DATA,passedParamExprs.get(0).getExpr());
+			dataExpr.addTensorExprParam(DataExpression.RAND_DIMS,passedParamExprs.get(1).getExpr());
+
+			if (unnamedParamCount >= 3)
+				// TODO use byRow parameter
+				dataExpr.addTensorExprParam(DataExpression.RAND_BY_ROW,passedParamExprs.get(2).getExpr());
+			if (unnamedParamCount == 4)
+				dataExpr.addTensorExprParam(DataExpression.RAND_DIMNAMES,passedParamExprs.get(3).getExpr());
+			if (unnamedParamCount > 4) {
+				errorListener.validationError(parseInfo, "for tensor statement, at most 4 arguments supported: data, dims, byrow, dimname");
+				return null;
+			}
+		}
+		else {
+			// handle first parameter, which is data and may be unnamed
+			ParameterExpression firstParam = passedParamExprs.get(0);
+			if (firstParam.getName() != null && !firstParam.getName().equals(DataExpression.RAND_DATA)){
+				errorListener.validationError(parseInfo, "tensor method must have data parameter as first parameter or unnamed parameter");
+				return null;
+			}
+			else {
+				dataExpr.addTensorExprParam(DataExpression.RAND_DATA, passedParamExprs.get(0).getExpr());
+			}
+
+			for (int i=1; i<passedParamExprs.size(); i++){
+				if (passedParamExprs.get(i).getName() == null){
+					errorListener.validationError(parseInfo, "for tensor statement, cannot mix named and unnamed parameters, only data parameter can be unnamed");
+					return null;
+				}
+				else {
+					dataExpr.addTensorExprParam(passedParamExprs.get(i).getName(), passedParamExprs.get(i).getExpr());
+				}
+			}
+		}
+		dataExpr.setTensorDefault();
+		return dataExpr;
+	}
+	
+	private static DataExpression processSQLExpression(String functionName,
+		List<ParameterExpression> passedParamExprs, CustomErrorListener errorListener, ParseInfo parseInfo)
+	{
+		DataExpression dataExpr = new DataExpression(DataOp.SQL, new HashMap<>(), parseInfo);
+		int namedParamCount = (int) passedParamExprs.stream().filter(p -> p.getName()!=null).count();
+		int unnamedParamCount = passedParamExprs.size() - namedParamCount;
+		
+		// check whether named or unnamed parameters are used
+		if (passedParamExprs.size() < 2){
+			errorListener.validationError(parseInfo, "for sql statement, must specify at least 2 arguments: conn, query");
+			return null;
+		}
+		if (unnamedParamCount > 0){
+			if (namedParamCount > 0) {
+				errorListener.validationError(parseInfo, "for sql statement, cannot mix named and unnamed parameters");
+				return null;
+			}
+			if (unnamedParamCount == 2 || unnamedParamCount == 4 ) {
+				// assume: conn, query, [password, query]
+				dataExpr.addSqlExprParam(DataExpression.SQL_CONN, passedParamExprs.get(0).getExpr());
+				dataExpr.addSqlExprParam(DataExpression.SQL_QUERY, passedParamExprs.get(1).getExpr());
+				if (unnamedParamCount == 4) {
+					dataExpr.addSqlExprParam(DataExpression.SQL_PASS, passedParamExprs.get(2).getExpr());
+					dataExpr.addSqlExprParam(DataExpression.SQL_QUERY, passedParamExprs.get(3).getExpr());
+				}
+			}
+			else {
+				errorListener.validationError(parseInfo, "for sql statement, "
+					+ "at most 4 arguments supported: conn, user, password, query");
+				return null;
+			}
+		}
+		else {
+			for (ParameterExpression passedParamExpr : passedParamExprs) {
+				dataExpr.addSqlExprParam(passedParamExpr.getName(), passedParamExpr.getExpr());
+			}
+		}
+		dataExpr.setSqlDefault();
+		return dataExpr;
+	}
+	
+	private static DataExpression processFederatedExpression(String functionName,
+		List<ParameterExpression> passedParamExprs, CustomErrorListener errorListener, ParseInfo parseInfo)
+	{
+		DataExpression dataExpr = new DataExpression(DataOp.FEDERATED, new HashMap<>(), parseInfo);
+		int namedParamCount = (int) passedParamExprs.stream().filter(p -> p.getName()!=null).count();
+		int unnamedParamCount = passedParamExprs.size() - namedParamCount;
+
+		if(passedParamExprs.size() < 2) {
+			errorListener.validationError(parseInfo,
+				"for federated statement, must specify at least 2 arguments: addresses, ranges");
+			return null;
+		}
+		if(unnamedParamCount > 0) {
+			if(namedParamCount > 0) {
+				errorListener.validationError(parseInfo,
+					"for federated statement, cannot mix named and unnamed parameters");
+				return null;
+			}
+			if(unnamedParamCount == 2) {
+				// first parameter addresses second are the ranges (type defaults to Matrix)
+				ParameterExpression param = passedParamExprs.get(0);
+				dataExpr.addFederatedExprParam(DataExpression.FED_ADDRESSES, param.getExpr());
+				param = passedParamExprs.get(1);
+				dataExpr.addFederatedExprParam(DataExpression.FED_RANGES, param.getExpr());
+			}
+			else if(unnamedParamCount == 3) {
+				ParameterExpression param = passedParamExprs.get(0);
+				dataExpr.addFederatedExprParam(DataExpression.FED_ADDRESSES, param.getExpr());
+				param = passedParamExprs.get(1);
+				dataExpr.addFederatedExprParam(DataExpression.FED_RANGES, param.getExpr());
+				param = passedParamExprs.get(2);
+				dataExpr.addFederatedExprParam(DataExpression.FED_TYPE, param.getExpr());
+			}
+			else {
+				errorListener.validationError(parseInfo,
+					"for federated statement, at most 3 arguments are supported: addresses, ranges, type");
+			}
+		}
+		else {
+			for (ParameterExpression passedParamExpr : passedParamExprs) {
+				dataExpr.addFederatedExprParam(passedParamExpr.getName(), passedParamExpr.getExpr());
+			}
+		}
+		dataExpr.setFederatedDefault();
+		return dataExpr;
+	}
 	
 	public void addRandExprParam(String paramName, Expression paramValue)
 	{
@@ -539,6 +603,32 @@ public class DataExpression extends DataIdentifier
 		} else if (paramName.equals(RAND_COLS) && paramValue instanceof DoubleIdentifier) {
 			paramValue = new IntIdentifier((long) ((DoubleIdentifier) paramValue).getValue(), this);
 		}
+
+		// add the parameter to expression list
+		paramValue.setParseInfo(this);
+		addVarParam(paramName,paramValue);
+	}
+	public void addFrameExprParam(String paramName, Expression paramValue)
+	{
+		// check name is valid
+		boolean found = FRAME_VALID_PARAM_NAMES.contains(paramName);
+
+		if (!found){
+			raiseValidateError("unexpected parameter \"" + paramName +
+				"\". Legal parameters for  frame statement are "
+				+ "(capitalization-sensitive): " + RAND_DATA + ", " + RAND_ROWS
+				+ ", " + RAND_COLS + ", " + SCHEMAPARAM);
+		}
+		if (getVarParam(paramName) != null) {
+			raiseValidateError("attempted to add frame statement parameter " + paramValue + " more than once");
+		}
+//		TODO convert double Matrix to String Frame
+		// Process the case where user provides double values to rows or cols
+//		if (paramName.equals(RAND_ROWS) && paramValue instanceof StringIdentifier) {
+//			paramValue = new IntIdentifier((long) ((DoubleIdentifier) paramValue).getValue(), this);
+//		} else if (paramName.equals(RAND_COLS) && paramValue instanceof DoubleIdentifier) {
+//			paramValue = new IntIdentifier((long) ((DoubleIdentifier) paramValue).getValue(), this);
+//		}
 
 		// add the parameter to expression list
 		paramValue.setParseInfo(this);
@@ -639,6 +729,13 @@ public class DataExpression extends DataIdentifier
 	public void setMatrixDefault(){
 		if (getVarParam(RAND_BY_ROW) == null)
 			addVarParam(RAND_BY_ROW, new BooleanIdentifier(true, this));
+	}
+
+	public void setFrameDefault(){
+		if(getVarParam(RAND_DATA) == null)
+			addVarParam(RAND_DATA, new StringIdentifier(null, this));
+		if (getVarParam(SCHEMAPARAM) == null)
+			addVarParam(SCHEMAPARAM, new StringIdentifier(DEFAULT_SCHEMAPARAM, this));
 	}
 
 	public void setTensorDefault(){
@@ -792,7 +889,7 @@ public class DataExpression extends DataIdentifier
 			}
 			inputParamExpr.validateExpression(ids, currConstVars, conditional);
 			if (s != null && !s.equals(RAND_DATA) && !s.equals(RAND_DIMS) && !s.equals(FED_ADDRESSES) && !s.equals(FED_RANGES)
-					&& !s.equals(DELIM_NA_STRINGS) && getVarParam(s).getOutput().getDataType() != DataType.SCALAR ) {
+					&& !s.equals(DELIM_NA_STRINGS) && !s.equals(SCHEMAPARAM) && getVarParam(s).getOutput().getDataType() != DataType.SCALAR ) {
 				raiseValidateError("Non-scalar data types are not supported for data expression.", conditional,LanguageErrorCodes.INVALID_PARAMETERS);
 			}
 		}
@@ -804,20 +901,19 @@ public class DataExpression extends DataIdentifier
 		// check if data parameter of matrix is scalar or matrix -- if scalar, use Rand instead
 		Expression dataParam1 = getVarParam(RAND_DATA);
 		if (dataParam1 == null && (getOpCode().equals(DataOp.MATRIX) || getOpCode().equals(DataOp.TENSOR))){
-			raiseValidateError("for matrix or tensor, must defined data parameter", conditional, LanguageErrorCodes.INVALID_PARAMETERS);
+			raiseValidateError("for matrix, frame or tensor, must defined data parameter", conditional, LanguageErrorCodes.INVALID_PARAMETERS);
 		}
 		// We need to remember the operation if we replace the OpCode by rand so we have the correct output
-		if (dataParam1 != null && dataParam1.getOutput().getDataType() == DataType.SCALAR &&
+		if (dataParam1!=null && dataParam1.getOutput()!=null && dataParam1.getOutput().getDataType() == DataType.SCALAR &&
 				(_opcode == DataOp.MATRIX || _opcode == DataOp.TENSOR)/*&& dataParam instanceof ConstIdentifier*/ ){
-			//MB: note we should not check for const identifiers here, because otherwise all matrix constructors with
+			//MB: note we must not check for const identifiers here, because otherwise all matrix constructors with
 			//variable input are routed to a reshape operation (but it works only on matrices and hence, crashes)
 			
 			// replace DataOp MATRIX with RAND -- Rand handles matrix generation for Scalar values
 			// replace data parameter with min / max within Rand case below
 			this.setOpCode(DataOp.RAND);
 		}
-		
-		
+
 		// IMPORTANT: for each operation, one must handle unnamed parameters
 		
 		switch (this.getOpCode()) {
@@ -838,6 +934,7 @@ public class DataExpression extends DataIdentifier
 						|| getVarParam(COLUMNBLOCKCOUNTPARAM) != null
 						|| getVarParam(FORMAT_TYPE) != null
 						|| getVarParam(DELIM_DELIMITER) != null	
+						|| getVarParam(LIBSVM_INDEX_DELIM) != null
 						|| getVarParam(DELIM_HAS_HEADER_ROW) != null
 						|| getVarParam(DELIM_FILL) != null
 						|| getVarParam(DELIM_FILL_VALUE) != null
@@ -848,8 +945,8 @@ public class DataExpression extends DataIdentifier
 						toString() + ". Only " + VALUETYPEPARAM + " is allowed.", conditional, LanguageErrorCodes.INVALID_PARAMETERS);
 				}
 			}
-			
-			JSONObject configObject = null;
+
+			MetaDataAll configObj = new MetaDataAll();
 
 			// Process expressions in input filename
 			String inputFileName = getInputFileName(currConstVars, conditional);
@@ -880,9 +977,10 @@ public class DataExpression extends DataIdentifier
 			
 			// check if file is matrix market format
 			if (formatTypeString == null && shouldReadMTD){
-				if ( checkHasMatrixMarketFormat(inputFileName, mtdFileName, conditional) ) {
+				if ( MetaDataAll.checkHasMatrixMarketFormat(inputFileName, mtdFileName, conditional) ) {
 					formatTypeString = FileFormat.MM.toString();
 					addVarParam(FORMAT_TYPE, new StringIdentifier(formatTypeString, this));
+					configObj.setFormatTypeString(formatTypeString);
 					inferredFormatType = true;
 					shouldReadMTD = false;
 				}
@@ -890,9 +988,10 @@ public class DataExpression extends DataIdentifier
 
 			// check if file is delimited format
 			if (formatTypeString == null && shouldReadMTD ) {
-				formatTypeString = checkHasDelimitedFormat(inputFileName, conditional);
+				formatTypeString = MetaDataAll.checkHasDelimitedFormat(inputFileName, conditional);
 				if (formatTypeString != null) {
 					addVarParam(FORMAT_TYPE, new StringIdentifier(formatTypeString, this));
+					configObj.setFormatTypeString(formatTypeString);
 					inferredFormatType = true;
 				}
 			}
@@ -945,7 +1044,6 @@ public class DataExpression extends DataIdentifier
 							raiseValidateError("MM file: invalid specified number of rows: "+rowsCount2+" vs "+rowsCount);
 					}
 					addVarParam(READROWPARAM, new IntIdentifier(rowsCount, this));
-					
 
 					long colsCount = Long.parseLong(sizeInfo[1]);
 					if (colsCount < 0)
@@ -956,7 +1054,8 @@ public class DataExpression extends DataIdentifier
 							raiseValidateError("MM file: invalid specified number of columns: "+colsCount2+" vs "+colsCount);
 					}
 					addVarParam(READCOLPARAM, new IntIdentifier(colsCount, this));
-					
+					configObj.setDimensions(rowsCount, colsCount);
+
 					long nnzCount = Long.parseLong(sizeInfo[2]) * (props.isSymmetric() ? 2 : 1);
 					if (nnzCount < 0)
 						raiseValidateError("MM file: invalid number of non-zeros: "+nnzCount);
@@ -966,16 +1065,16 @@ public class DataExpression extends DataIdentifier
 							raiseValidateError("MM file: invalid specified number of non-zeros: "+nnzCount2+" vs "+nnzCount);
 					}
 					addVarParam(READNNZPARAM, new IntIdentifier(nnzCount, this));
+					configObj.setNnz(nnzCount);
 				}
 			}
 			
 			boolean isCSV = (formatTypeString != null && formatTypeString.equalsIgnoreCase(FileFormat.CSV.toString()));
 			
 			if (shouldReadMTD){
-				configObject = readMetadataFile(mtdFileName, conditional);
-				// if the MTD file exists, check the values specified in read statement match values in metadata MTD file
-				if (configObject != null){
-					parseMetaDataFileParameters(mtdFileName, configObject, conditional);
+				configObj = new MetaDataAll(mtdFileName, conditional, false);
+				if (configObj.mtdExists()){
+					_varParams = configObj.parseMetaDataFileParameters(mtdFileName, conditional, _varParams);
 					inferredFormatType = true;
 				}
 				else {
@@ -1001,7 +1100,7 @@ public class DataExpression extends DataIdentifier
 						}
 					}
 				}
-				
+
 				// DEFAULT for "sep" : ","
 				if (getVarParam(DELIM_DELIMITER) == null) {
 					addVarParam(DELIM_DELIMITER, new StringIdentifier(DEFAULT_DELIM_DELIMITER, this));
@@ -1066,33 +1165,56 @@ public class DataExpression extends DataIdentifier
 				}
 			} 
 
-			boolean islibsvm = false;
-			islibsvm = (formatTypeString != null && formatTypeString.equalsIgnoreCase(FileFormat.LIBSVM.toString()));
-			if (islibsvm){
+			boolean isLIBSVM = false;
+			isLIBSVM = (formatTypeString != null && formatTypeString.equalsIgnoreCase(FileFormat.LIBSVM.toString()));
+			if (isLIBSVM) {
 				 // Handle libsvm file format
 				shouldReadMTD = true;
 				
 				// only allow IO_FILENAME, READROWPARAM, READCOLPARAM   
 				// as valid parameters
-				if( !inferredFormatType ){
-					for (String key : _varParams.keySet()){
-						if (!  (key.equals(IO_FILENAME) || key.equals(FORMAT_TYPE) 
+				if( !inferredFormatType ) {
+					for (String key : _varParams.keySet()) {
+						if (!(key.equals(IO_FILENAME) || key.equals(FORMAT_TYPE) 
 								|| key.equals(READROWPARAM) || key.equals(READCOLPARAM)
 								|| key.equals(READNNZPARAM) || key.equals(DATATYPEPARAM) 
-								|| key.equals(VALUETYPEPARAM) ))
+								|| key.equals(VALUETYPEPARAM) || key.equals(DELIM_DELIMITER)
+								|| key.equals(LIBSVM_INDEX_DELIM)))
 						{	
-							String msg = "Only parameters allowed are: " + IO_FILENAME     + "," 
-									   + READROWPARAM     + "," 
-									   + READCOLPARAM;
+							String msg = "Only parameters allowed are: " + IO_FILENAME + "," 
+									+ READROWPARAM + "," + READCOLPARAM
+									+ DELIM_DELIMITER + "," + LIBSVM_INDEX_DELIM;
 							
 							raiseValidateError("Invalid parameter " + key + " in read statement: " +
 									toString() + ". " + msg, conditional, LanguageErrorCodes.INVALID_PARAMETERS);
 						}
 					}
 				}
+				// DEFAULT for "sep" : ","
+				if (getVarParam(DELIM_DELIMITER) == null) {
+					addVarParam(DELIM_DELIMITER, new StringIdentifier(DEFAULT_DELIM_DELIMITER, this));
+				}
+				else {
+					if ((getVarParam(DELIM_DELIMITER) instanceof ConstIdentifier) 
+							&& (!(getVarParam( DELIM_DELIMITER) instanceof StringIdentifier))) {
+						raiseValidateError( "For delimited file " + getVarParam(DELIM_DELIMITER) + " must be a string value ", conditional);
+					}
+				}
+				// DEFAULT for "indSep": ":"
+				if(getVarParam(LIBSVM_INDEX_DELIM) == null) {
+					addVarParam(LIBSVM_INDEX_DELIM, new StringIdentifier(DEFAULT_LIBSVM_INDEX_DELIM, this));
+				}
+				else {
+					if((getVarParam(LIBSVM_INDEX_DELIM) instanceof ConstIdentifier) 
+							&& (!(getVarParam(LIBSVM_INDEX_DELIM) instanceof StringIdentifier))) {
+						raiseValidateError(
+								"For delimited file " + getVarParam(LIBSVM_INDEX_DELIM) + " must be a string value ", conditional);
+					}
+				}
 			}
-			
-	        dataTypeString = (getVarParam(DATATYPEPARAM) == null) ? null : getVarParam(DATATYPEPARAM).toString();
+			boolean isHDF5 = (formatTypeString != null && formatTypeString.equalsIgnoreCase(FileFormat.HDF5.toString()));
+
+			dataTypeString = (getVarParam(DATATYPEPARAM) == null) ? null : getVarParam(DATATYPEPARAM).toString();
 			
 			if ( dataTypeString == null || dataTypeString.equalsIgnoreCase(Statement.MATRIX_DATA_TYPE) 
 					|| dataTypeString.equalsIgnoreCase(Statement.FRAME_DATA_TYPE)) {
@@ -1118,8 +1240,8 @@ public class DataExpression extends DataIdentifier
 				// initialize size of target data identifier to UNKNOWN
 				getOutput().setDimensions(-1, -1);
 				
-				if ( !isCSV && ConfigurationManager.getCompilerConfig()
-						.getBool(ConfigType.REJECT_READ_WRITE_UNKNOWNS) //skip check for csv format / jmlc api
+				if (!isCSV && !isLIBSVM && !isHDF5 && ConfigurationManager.getCompilerConfig()
+						.getBool(ConfigType.REJECT_READ_WRITE_UNKNOWNS) //skip check for csv/libsvm format / jmlc api
 					&& (getVarParam(READROWPARAM) == null || getVarParam(READCOLPARAM) == null) ) {
 						raiseValidateError("Missing or incomplete dimension information in read statement: "
 								+ mtdFileName, conditional, LanguageErrorCodes.INVALID_PARAMETERS);
@@ -1142,6 +1264,15 @@ public class DataExpression extends DataIdentifier
 					} else if (!isCSV && ((dim1 != null) || (dim2 != null))) {
 						raiseValidateError("Partial dimension information in read statement", conditional, LanguageErrorCodes.INVALID_PARAMETERS);
 					}
+				}
+				
+				if(isLIBSVM) {
+					Long dim2 = (getVarParam(READCOLPARAM) == null) ? null : Long.valueOf(getVarParam(READCOLPARAM).toString());
+					if(dim2 < 0 && ConfigurationManager.getCompilerConfig()
+							.getBool(ConfigType.REJECT_READ_WRITE_UNKNOWNS)) {
+						raiseValidateError("Invalid dimension information in read statement", conditional, LanguageErrorCodes.INVALID_PARAMETERS);
+					}
+					getOutput().setDimensions(-1, dim2 + 1);
 				}
 				
 				// initialize block dimensions to UNKNOWN 
@@ -1175,8 +1306,14 @@ public class DataExpression extends DataIdentifier
 				getOutput().setNnz(-1L);
 				setPrivacy();
 			}
+			else if ( dataTypeString.equalsIgnoreCase(DataType.LIST.name())) {
+				getOutput().setDataType(DataType.LIST);
+				setPrivacy();
+			}
 			else{
-				raiseValidateError("Unknown Data Type " + dataTypeString + ". Valid  values: " + Statement.SCALAR_DATA_TYPE +", " + Statement.MATRIX_DATA_TYPE, conditional, LanguageErrorCodes.INVALID_PARAMETERS);
+				raiseValidateError("Unknown Data Type " + dataTypeString + ". Valid  values: " 
+					+ Statement.SCALAR_DATA_TYPE +", " + Statement.MATRIX_DATA_TYPE+", " + Statement.FRAME_DATA_TYPE
+					+", " + DataType.LIST.name().toLowerCase(), conditional, LanguageErrorCodes.INVALID_PARAMETERS);
 			}
 			
 			// handle value type parameter
@@ -1187,17 +1324,19 @@ public class DataExpression extends DataIdentifier
 			// Identify the value type (used only for read method)
 			String valueTypeString = getVarParam(VALUETYPEPARAM) == null ? null :  getVarParam(VALUETYPEPARAM).toString();
 			if (valueTypeString != null) {
-				if (valueTypeString.equalsIgnoreCase(Statement.DOUBLE_VALUE_TYPE)) {
+				if (valueTypeString.equalsIgnoreCase(Statement.DOUBLE_VALUE_TYPE))
 					getOutput().setValueType(ValueType.FP64);
-				} else if (valueTypeString.equalsIgnoreCase(Statement.STRING_VALUE_TYPE)) {
+				else if (valueTypeString.equalsIgnoreCase(Statement.STRING_VALUE_TYPE))
 					getOutput().setValueType(ValueType.STRING);
-				} else if (valueTypeString.equalsIgnoreCase(Statement.INT_VALUE_TYPE)) {
+				else if (valueTypeString.equalsIgnoreCase(Statement.INT_VALUE_TYPE))
 					getOutput().setValueType(ValueType.INT64);
-				} else if (valueTypeString.equalsIgnoreCase(Statement.BOOLEAN_VALUE_TYPE)) {
+				else if (valueTypeString.equalsIgnoreCase(Statement.BOOLEAN_VALUE_TYPE))
 					getOutput().setValueType(ValueType.BOOLEAN);
-				} else {
+				else if (valueTypeString.equalsIgnoreCase(ValueType.UNKNOWN.name()))
+					getOutput().setValueType(ValueType.UNKNOWN);
+				else {
 					raiseValidateError("Unknown Value Type " + valueTypeString
-							+ ". Valid values are: " + Statement.DOUBLE_VALUE_TYPE +", " + Statement.INT_VALUE_TYPE + ", " + Statement.BOOLEAN_VALUE_TYPE + ", " + Statement.STRING_VALUE_TYPE, conditional);
+						+ ". Valid values are: " + Statement.DOUBLE_VALUE_TYPE +", " + Statement.INT_VALUE_TYPE + ", " + Statement.BOOLEAN_VALUE_TYPE + ", " + Statement.STRING_VALUE_TYPE, conditional);
 				}
 			} else {
 				getOutput().setValueType(ValueType.FP64);
@@ -1207,7 +1346,7 @@ public class DataExpression extends DataIdentifier
 			
 		case WRITE:
 			
-			// for delimited format, if no delimiter specified THEN set default ","
+			// for CSV format, if no delimiter specified THEN set default ","
 			if (getVarParam(FORMAT_TYPE) == null || getVarParam(FORMAT_TYPE).toString().equalsIgnoreCase(FileFormat.CSV.toString())){
 				if (getVarParam(DELIM_DELIMITER) == null) {
 					addVarParam(DELIM_DELIMITER, new StringIdentifier(DEFAULT_DELIM_DELIMITER, this));
@@ -1219,45 +1358,29 @@ public class DataExpression extends DataIdentifier
 					addVarParam(DELIM_SPARSE, new BooleanIdentifier(DEFAULT_DELIM_SPARSE, this));
 				}
 			}
-
-			if (getVarParam(FORMAT_TYPE) == null || getVarParam(FORMAT_TYPE).toString().equalsIgnoreCase(FileFormat.LIBSVM.toString())){
-				if (getVarParam(DELIM_SPARSE) == null) {
-					addVarParam(DELIM_SPARSE, new BooleanIdentifier(DEFAULT_DELIM_SPARSE, this));
-				}
-			}
 			
-			/* NOTE MB: disabled filename concatenation because we now support dynamic rewrite
-			if (getVarParam(IO_FILENAME) instanceof BinaryExpression){
-				BinaryExpression expr = (BinaryExpression)getVarParam(IO_FILENAME);
-								
-				if (expr.getKind()== Expression.Kind.BinaryOp){
-					Expression.BinaryOp op = expr.getOpCode();
-					switch (op){
-						case PLUS:
-							mtdFileName = "";
-							mtdFileName = fileNameCat(expr, currConstVars, mtdFileName);
-							// Since we have computed the value of filename, we update
-							// varParams with a const string value
-							StringIdentifier fileString = new StringIdentifier(mtdFileName, 
-									this.getFilename(), this.getBeginLine(), this.getBeginColumn(), 
-									this.getEndLine(), this.getEndColumn());
-							removeVarParam(IO_FILENAME);
-							addVarParam(IO_FILENAME, fileString);
-												
-							break;
-						default:
-							raiseValidateError("for OutputStatement, parameter " + IO_FILENAME 
-									+ " can only be a const string or const string concatenations. ", 
-									conditional);
+			// for LIBSVM format, add the default separators if not specified
+			if (getVarParam(FORMAT_TYPE) == null || getVarParam(FORMAT_TYPE).toString().equalsIgnoreCase(FileFormat.LIBSVM.toString())) {
+					if(getVarParam(DELIM_DELIMITER) == null) {
+						addVarParam(DELIM_DELIMITER, new StringIdentifier(DEFAULT_DELIM_DELIMITER, this));
+					}
+					if(getVarParam(LIBSVM_INDEX_DELIM) == null) {
+						addVarParam(LIBSVM_INDEX_DELIM, new StringIdentifier(DEFAULT_LIBSVM_INDEX_DELIM, this));
+					}
+					if(getVarParam(DELIM_SPARSE) == null) {
+						addVarParam(DELIM_SPARSE, new BooleanIdentifier(DEFAULT_DELIM_SPARSE, this));
 					}
 				}
-			}*/
 			
 			//validate read filename
 			if (getVarParam(FORMAT_TYPE) == null || FileFormat.isTextFormat(getVarParam(FORMAT_TYPE).toString()))
 				getOutput().setBlocksize(-1);
-			else if (getVarParam(FORMAT_TYPE).toString().equalsIgnoreCase(FileFormat.BINARY.toString()))
-				getOutput().setBlocksize(ConfigurationManager.getBlocksize());
+			else if (getVarParam(FORMAT_TYPE).toString().equalsIgnoreCase(FileFormat.BINARY.toString())) {
+				if( getVarParam(ROWBLOCKCOUNTPARAM)!=null )
+					getOutput().setBlocksize(Integer.parseInt(getVarParam(ROWBLOCKCOUNTPARAM).toString()));
+				else
+					getOutput().setBlocksize(ConfigurationManager.getBlocksize());
+			}
 			else
 				raiseValidateError("Invalid format " + getVarParam(FORMAT_TYPE)
 					+ " in statement: " + toString(), conditional);
@@ -1732,7 +1855,7 @@ public class DataExpression extends DataIdentifier
 					else {
 						raiseValidateError("In matrix statement, can only assign rows a long " +
 								"(integer) value >= 1 -- attempted to assign value: " + colsExpr.toString(), conditional);
-					}		
+					}
 				}
 				else if (colsExpr instanceof DataIdentifier && !(colsExpr instanceof IndexedIdentifier)) {
 					
@@ -1758,7 +1881,6 @@ public class DataExpression extends DataIdentifier
 						}
 						// handle double constant 
 						else if (constValue instanceof DoubleIdentifier){
-							
 							if (((DoubleIdentifier)constValue).getValue() < 1){
 								raiseValidateError("In matrix statement, can only assign cols a long " +
 										"(integer) value >= 1 -- attempted to assign value: " 
@@ -1768,8 +1890,7 @@ public class DataExpression extends DataIdentifier
 							long roundedValue = Double.valueOf(Math.floor(((DoubleIdentifier)constValue).getValue())).longValue();
 							colsExpr = new IntIdentifier(roundedValue, this);
 							addVarParam(RAND_COLS, colsExpr);
-							colsLong = roundedValue; 
-							
+							colsLong = roundedValue;
 						}
 						else {
 							// exception -- rows must be integer or double constant
@@ -1781,29 +1902,190 @@ public class DataExpression extends DataIdentifier
 						// handle general expression
 						colsExpr.validateExpression(ids, currConstVars, conditional);
 					}
-						
-				}	
+				}
 				else {
 					// handle general expression
 					colsExpr.validateExpression(ids, currConstVars, conditional);
 				}
-			}	
+			}
 			getOutput().setFileFormat(FileFormat.BINARY);
 			getOutput().setDataType(DataType.MATRIX);
 			getOutput().setValueType(ValueType.FP64);
 			getOutput().setDimensions(rowsLong, colsLong);
-				
+			
 			if (getOutput() instanceof IndexedIdentifier){
 				((IndexedIdentifier) getOutput()).setOriginalDimensions(getOutput().getDim1(), getOutput().getDim2());
-			}
-			//getOutput().computeDataType();
-
-			if (getOutput() instanceof IndexedIdentifier){
 				LOG.warn(this.printWarningLocation() + "Output for matrix Statement may have incorrect size information");
 			}
 			
 			break;
 
+		case FRAME:
+			//handle default and input arguments
+			setFrameDefault();
+			validateParams(conditional, FRAME_VALID_PARAM_NAMES,
+				"Legal parameters for frame statement are (case-sensitive): "
+					+ RAND_DATA + ", " + RAND_ROWS	+ ", " + RAND_COLS + ", " + SCHEMAPARAM);
+
+			//validate correct value types
+			if (getVarParam(RAND_ROWS) != null && (getVarParam(RAND_ROWS) instanceof StringIdentifier || getVarParam(RAND_ROWS) instanceof BooleanIdentifier)){
+				raiseValidateError("for frame statement " + RAND_ROWS + " has incorrect value type", conditional);
+			}
+			if (getVarParam(RAND_COLS) != null && (getVarParam(RAND_COLS) instanceof StringIdentifier || getVarParam(RAND_COLS) instanceof BooleanIdentifier)){
+				raiseValidateError("for frame statement " + RAND_COLS + " has incorrect value type", conditional);
+			}
+
+			//validate general data expression
+			getVarParam(RAND_DATA).validateExpression(ids, currConstVars, conditional);
+
+			rowsLong = -1L;
+			colsLong = -1L;
+
+			///////////////////////////////////////////////////////////////////
+			// HANDLE ROWS
+			///////////////////////////////////////////////////////////////////
+			rowsExpr = getVarParam(RAND_ROWS);
+			if (rowsExpr != null){
+				if (rowsExpr instanceof IntIdentifier) {
+					if  (((IntIdentifier)rowsExpr).getValue() >= 1 )
+						rowsLong = ((IntIdentifier)rowsExpr).getValue();
+					else
+						raiseValidateError("In frame statement, can only assign rows a long " +
+							"(integer) value >= 1 -- attempted to assign value: " + ((IntIdentifier)rowsExpr).getValue(), conditional);
+				}
+				else if (rowsExpr instanceof DoubleIdentifier) {
+					if  (((DoubleIdentifier)rowsExpr).getValue() >= 1 )
+						rowsLong = Double.valueOf((Math.floor(((DoubleIdentifier)rowsExpr).getValue()))).longValue();
+					else
+						raiseValidateError("In frame statement, can only assign rows a long " +
+							"(integer) value >= 1 -- attempted to assign value: " + rowsExpr.toString(), conditional);
+				}
+				else if (rowsExpr instanceof DataIdentifier && !(rowsExpr instanceof IndexedIdentifier)) {
+					// check if the DataIdentifier variable is a ConstIdentifier
+					String identifierName = ((DataIdentifier)rowsExpr).getName();
+					if (currConstVars.containsKey(identifierName)){
+						// handle int constant
+						ConstIdentifier constValue = currConstVars.get(identifierName);
+						if (constValue instanceof IntIdentifier){
+							// check rows is >= 1 --- throw exception
+							if (((IntIdentifier)constValue).getValue() < 1){
+								raiseValidateError("In frame statement, can only assign rows a long " +
+									"(integer) value >= 1 -- attempted to assign value: " + constValue.toString(), conditional);
+							}
+							// update row expr with new IntIdentifier
+							long roundedValue = ((IntIdentifier)constValue).getValue();
+							rowsExpr = new IntIdentifier(roundedValue, this);
+							addVarParam(RAND_ROWS, rowsExpr);
+							rowsLong = roundedValue;
+						}
+						// handle double constant
+						else if (constValue instanceof DoubleIdentifier){
+							if (((DoubleIdentifier)constValue).getValue() < 1.0){
+								raiseValidateError("In frame statement, can only assign rows a long " +
+									"(integer) value >= 1 -- attempted to assign value: " + constValue.toString(), conditional);
+							}
+							// update row expr with new IntIdentifier (rounded down)
+							long roundedValue = Double.valueOf(Math.floor(((DoubleIdentifier)constValue).getValue())).longValue();
+							rowsExpr = new IntIdentifier(roundedValue, this);
+							addVarParam(RAND_ROWS, rowsExpr);
+							rowsLong = roundedValue;
+						}
+						else {
+							// exception -- rows must be integer or double constant
+							raiseValidateError("In frame statement, can only assign rows a long " +
+								"(integer) value >= 1 -- attempted to assign value: " + constValue.toString(), conditional);
+						}
+					}
+					else {
+						// handle general expression
+						rowsExpr.validateExpression(ids, currConstVars, conditional);
+					}
+				}
+				else {
+					// handle general expression
+					rowsExpr.validateExpression(ids, currConstVars, conditional);
+				}
+			}
+
+			///////////////////////////////////////////////////////////////////
+			// HANDLE COLUMNS
+			///////////////////////////////////////////////////////////////////
+
+			colsExpr = getVarParam(RAND_COLS);
+			if (colsExpr != null){
+				if (colsExpr instanceof IntIdentifier) {
+					if  (((IntIdentifier)colsExpr).getValue() >= 1 )
+						colsLong = ((IntIdentifier)colsExpr).getValue();
+					else
+						raiseValidateError("In frame statement, can only assign cols a long " +
+							"(integer) value >= 1 -- attempted to assign value: " + colsExpr.toString(), conditional);
+				}
+				else if (colsExpr instanceof DoubleIdentifier) {
+					if  (((DoubleIdentifier)colsExpr).getValue() >= 1 )
+						colsLong = Double.valueOf((Math.floor(((DoubleIdentifier)colsExpr).getValue()))).longValue();
+					else
+						raiseValidateError("In frame statement, can only assign rows a long " +
+							"(integer) value >= 1 -- attempted to assign value: " + colsExpr.toString(), conditional);
+				}
+				else if (colsExpr instanceof DataIdentifier && !(colsExpr instanceof IndexedIdentifier)) {
+					// check if the DataIdentifier variable is a ConstIdentifier
+					String identifierName = ((DataIdentifier)colsExpr).getName();
+					if (currConstVars.containsKey(identifierName)){
+						// handle int constant
+						ConstIdentifier constValue = currConstVars.get(identifierName);
+						if (constValue instanceof IntIdentifier){
+							// check cols is >= 1 --- throw exception
+							if (((IntIdentifier)constValue).getValue() < 1){
+								raiseValidateError("In frame statement, can only assign cols a long " +
+									"(integer) value >= 1 -- attempted to assign value: "
+									+ constValue.toString(), conditional);
+							}
+							// update col expr with new IntIdentifier
+							long roundedValue = ((IntIdentifier)constValue).getValue();
+							colsExpr = new IntIdentifier(roundedValue, this);
+							addVarParam(RAND_COLS, colsExpr);
+							colsLong = roundedValue;
+						}
+						// handle double constant
+						else if (constValue instanceof DoubleIdentifier){
+							if (((DoubleIdentifier)constValue).getValue() < 1){
+								raiseValidateError("In frame statement, can only assign cols a long " +
+									"(integer) value >= 1 -- attempted to assign value: "
+									+ constValue.toString(), conditional);
+							}
+							// update col expr with new IntIdentifier (rounded down)
+							long roundedValue = Double.valueOf(Math.floor(((DoubleIdentifier)constValue).getValue())).longValue();
+							colsExpr = new IntIdentifier(roundedValue, this);
+							addVarParam(RAND_COLS, colsExpr);
+							colsLong = roundedValue;
+						}
+						else {
+							// exception -- rows must be integer or double constant
+							raiseValidateError("In frame statement, can only assign cols a long " +
+								"(integer) value >= 1 -- attempted to assign value: " + constValue.toString(), conditional);
+						}
+					}
+					else {
+						// handle general expression
+						colsExpr.validateExpression(ids, currConstVars, conditional);
+					}
+				}
+				else {
+					// handle general expression
+					colsExpr.validateExpression(ids, currConstVars, conditional);
+				}
+			}
+			getOutput().setFileFormat(FileFormat.BINARY);
+			getOutput().setDataType(DataType.FRAME);
+			getOutput().setValueType(ValueType.UNKNOWN);
+			getOutput().setDimensions(rowsLong, colsLong);
+
+			if (getOutput() instanceof IndexedIdentifier){
+				((IndexedIdentifier) getOutput()).setOriginalDimensions(getOutput().getDim1(), getOutput().getDim2());
+				LOG.warn(this.printWarningLocation() + "Output for frame Statement may have incorrect size information");
+			}
+			break;
+			
 		case TENSOR:
 			//handle default and input arguments
 			setTensorDefault();
@@ -1840,9 +2122,8 @@ public class DataExpression extends DataIdentifier
 			if (getOutput() instanceof IndexedIdentifier){
 				LOG.warn(this.printWarningLocation() + "Output for tensor Statement may have incorrect size information");
 			}
-
 			break;
-			
+
 		case SQL:
 			//handle default and input arguments
 			setSqlDefault();
@@ -2053,184 +2334,6 @@ public class DataExpression extends DataIdentifier
 		return result;
 	}
 	
-	@SuppressWarnings("unchecked")
-	private void parseMetaDataFileParameters(String mtdFileName, JSONObject configObject, boolean conditional) 
-	{
-    	for( Object obj : configObject.entrySet() ){
-			Entry<Object,Object> e = (Entry<Object, Object>) obj;
-    		Object key = e.getKey();
-    		Object val = e.getValue();
-			
-			boolean isValidName = READ_VALID_MTD_PARAM_NAMES.contains(key);
-    		
-			if (!isValidName){ //wrong parameters always rejected
-				raiseValidateError("MTD file " + mtdFileName + " contains invalid parameter name: " + key, false);
-			}
-			
-			// if the read method parameter is a constant, then verify value matches MTD metadata file
-			if (getVarParam(key.toString()) != null && (getVarParam(key.toString()) instanceof ConstIdentifier)
-					&& !getVarParam(key.toString()).toString().equalsIgnoreCase(val.toString())) {
-				raiseValidateError("Parameter '" + key.toString()
-					+ "' has conflicting values in metadata and read statement. MTD file value: '"
-					+ val.toString() + "'. Read statement value: '" + getVarParam(key.toString()) + "'.", conditional);
-			} else {
-				// if the read method does not specify parameter value, then add MTD metadata file value to parameter list
-				if (getVarParam(key.toString()) == null){
-					if (( !key.toString().equalsIgnoreCase(DESCRIPTIONPARAM) ) &&
-							( !key.toString().equalsIgnoreCase(AUTHORPARAM) ) &&
-							( !key.toString().equalsIgnoreCase(CREATEDPARAM) ) )
-					{
-						StringIdentifier strId = new StringIdentifier(val.toString(), this);
-						
-						if ( key.toString().equalsIgnoreCase(DELIM_HAS_HEADER_ROW) 
-								|| key.toString().equalsIgnoreCase(DELIM_FILL)
-								|| key.toString().equalsIgnoreCase(DELIM_SPARSE)
-								) {
-							// parse these parameters as boolean values
-							BooleanIdentifier boolId = null; 
-							if (strId.toString().equalsIgnoreCase("true")) {
-								boolId = new BooleanIdentifier(true, this);
-							} else if (strId.toString().equalsIgnoreCase("false")) {
-								boolId = new BooleanIdentifier(false, this);
-							} else {
-								raiseValidateError("Invalid value provided for '" + DELIM_HAS_HEADER_ROW + "' in metadata file '" + mtdFileName + "'. "
-										+ "Must be either TRUE or FALSE.", conditional);
-							}
-							removeVarParam(key.toString());
-							addVarParam(key.toString(), boolId);
-						}
-						else if ( key.toString().equalsIgnoreCase(DELIM_FILL_VALUE)) {
-							// parse these parameters as numeric values
-							DoubleIdentifier doubleId = new DoubleIdentifier(Double.parseDouble(strId.toString()),
-									this);
-							removeVarParam(key.toString());
-							addVarParam(key.toString(), doubleId);
-						}
-						else if (key.toString().equalsIgnoreCase(DELIM_NA_STRINGS) 
-								|| key.toString().equalsIgnoreCase(PRIVACY)
-								|| key.toString().equalsIgnoreCase(FINE_GRAINED_PRIVACY)) {
-							String naStrings = null;
-							if ( val instanceof String) {
-								naStrings = val.toString();
-							}
-							else if (val instanceof JSONArray) {
-								StringBuilder sb = new StringBuilder();
-								JSONArray valarr = (JSONArray)val;
-								for(int naid=0; naid < valarr.size(); naid++ ) {
-									sb.append( (String) valarr.get(naid) );
-									if ( naid < valarr.size()-1)
-										sb.append( DELIM_NA_STRING_SEP );
-								}
-								naStrings = sb.toString();
-							}
-							else if ( val instanceof JSONObject ){
-								JSONObject valJsonObject = (JSONObject)val;
-								naStrings = valJsonObject.toString();
-							}
-							else {
-								throw new ParseException("Type of value " + val 
-									+ " from metadata not recognized by parser.");
-							}
-							StringIdentifier sid = new StringIdentifier(naStrings, this);
-							removeVarParam(key.toString());
-							addVarParam(key.toString(), sid);
-						}
-						else {
-							// by default, treat a parameter as a string
-							addVarParam(key.toString(), strId);
-						}
-					}
-				}
-			}
-		}
-	}
-	
-	public JSONObject readMetadataFile(String filename, boolean conditional) 
-	{
-		JSONObject retVal = null;
-		boolean exists = HDFSTool.existsFileOnHDFS(filename);
-		boolean isDir = HDFSTool.isDirectory(filename);
-		
-		// CASE: filename is a directory -- process as a directory
-		if( exists && isDir ) 
-		{
-			retVal = new JSONObject();
-			for(FileStatus stat : HDFSTool.getDirectoryListing(filename)) {
-				Path childPath = stat.getPath(); // gives directory name
-				if( !childPath.getName().startsWith("part") )
-					continue;
-				try (BufferedReader br = new BufferedReader(new InputStreamReader(
-					IOUtilFunctions.getFileSystem(childPath).open(childPath))))
-				{
-					JSONObject childObj = JSONHelper.parse(br);
-					for( Object obj : childObj.entrySet() ){
-						@SuppressWarnings("unchecked")
-						Entry<Object,Object> e = (Entry<Object, Object>) obj;
-						Object key = e.getKey();
-						Object val = e.getValue();
-						retVal.put(key, val);
-					}
-				}
-				catch(Exception e){
-					raiseValidateError("for MTD file in directory, error parting part of MTD file with path " + childPath.toString() + ": " + e.getMessage(), conditional);
-				}
-			} 
-		}
-		// CASE: filename points to a file
-		else if (exists) {
-			Path path = new Path(filename);
-			try (BufferedReader br = new BufferedReader(new InputStreamReader(
-				IOUtilFunctions.getFileSystem(path).open(path))))
-			{
-				retVal = new JSONObject(br);
-			} 
-			catch (Exception e){
-				raiseValidateError("error parsing MTD file with path " + filename + ": " + e.getMessage(), conditional);
-			}
-		}
-		
-		return retVal;
-	}
-	
-	public boolean checkHasMatrixMarketFormat(String inputFileName, String mtdFileName, boolean conditional) 
-	{
-		// Check the MTD file exists. if there is an MTD file, return false.
-		JSONObject mtdObject = readMetadataFile(mtdFileName, conditional);
-		if (mtdObject != null)
-			return false;
-		
-		if( HDFSTool.existsFileOnHDFS(inputFileName) 
-			&& !HDFSTool.isDirectory(inputFileName)  )
-		{
-			Path path = new Path(inputFileName);
-			try( BufferedReader in = new BufferedReader(new InputStreamReader(
-				IOUtilFunctions.getFileSystem(path).open(path))))
-			{
-				String headerLine = new String("");
-				if (in.ready())
-					headerLine = in.readLine();
-				return (headerLine !=null && headerLine.startsWith("%%"));
-			}
-			catch(Exception ex) {
-				throw new LanguageException("Failed to read matrix market header.", ex);
-			}
-		}
-		return false;
-	}
-	
-	public String checkHasDelimitedFormat(String filename, boolean conditional) {
-		// if the MTD file exists, check the format is not binary 
-		JSONObject mtdObject = readMetadataFile(filename + ".mtd", conditional);
-		if (mtdObject != null) {
-			String formatTypeString = (String)JSONHelper.get(mtdObject,FORMAT_TYPE);
-			if( FileFormat.isDelimitedFormat(formatTypeString) )
-				return formatTypeString;
-		}
-		return null;
-		// The file format must be specified either in .mtd file or in read() statement
-		// Therefore, one need not actually read the data to infer the format.
-	}
-	
 	public boolean isCSVReadWithUnknownSize() {
 		Expression format = getVarParam(FORMAT_TYPE);
 		if( _opcode == DataOp.READ && format!=null && format.toString().equalsIgnoreCase(FileFormat.CSV.toString()) ) {
@@ -2238,6 +2341,17 @@ public class DataExpression extends DataIdentifier
 			Expression cols = getVarParam(READCOLPARAM);
 			return (rows==null || Long.parseLong(rows.toString())<0)
 				||(cols==null || Long.parseLong(cols.toString())<0);
+		}
+		return false;
+	}
+	
+	public boolean isLIBSVMReadWithUnknownSize() {
+		Expression format = getVarParam(FORMAT_TYPE);
+		if (_opcode == DataOp.READ && format != null && format.toString().equalsIgnoreCase(FileFormat.LIBSVM.toString())) {
+			Expression rows = getVarParam(READROWPARAM);
+			Expression cols = getVarParam(READCOLPARAM);
+			return (rows == null || Long.parseLong(rows.toString()) < 0) 
+				|| (cols == null || Long.parseLong(cols.toString()) < 0);
 		}
 		return false;
 	}

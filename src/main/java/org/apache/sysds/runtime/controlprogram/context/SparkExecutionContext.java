@@ -19,9 +19,27 @@
 
 package org.apache.sysds.runtime.controlprogram.context;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.LongAdder;
+import java.util.stream.Collectors;
+import java.util.stream.LongStream;
+
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -29,6 +47,7 @@ import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.storage.RDDInfo;
 import org.apache.spark.storage.StorageLevel;
 import org.apache.spark.util.LongAccumulator;
+import org.apache.sysds.api.DMLException;
 import org.apache.sysds.api.DMLScript;
 import org.apache.sysds.api.mlcontext.MLContext;
 import org.apache.sysds.api.mlcontext.MLContextUtil;
@@ -41,7 +60,6 @@ import org.apache.sysds.conf.DMLConfig;
 import org.apache.sysds.hops.OptimizerUtils;
 import org.apache.sysds.lops.Checkpoint;
 import org.apache.sysds.runtime.DMLRuntimeException;
-import org.apache.sysds.runtime.compress.CompressedMatrixBlock;
 import org.apache.sysds.runtime.controlprogram.Program;
 import org.apache.sysds.runtime.controlprogram.caching.CacheBlock;
 import org.apache.sysds.runtime.controlprogram.caching.CacheableData;
@@ -49,10 +67,11 @@ import org.apache.sysds.runtime.controlprogram.caching.FrameObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.controlprogram.caching.TensorObject;
 import org.apache.sysds.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
-import org.apache.sysds.runtime.data.TensorBlock;
 import org.apache.sysds.runtime.data.SparseBlock;
+import org.apache.sysds.runtime.data.TensorBlock;
 import org.apache.sysds.runtime.data.TensorIndexes;
 import org.apache.sysds.runtime.instructions.cp.Data;
+import org.apache.sysds.runtime.instructions.spark.DeCompressionSPInstruction;
 import org.apache.sysds.runtime.instructions.spark.data.BroadcastObject;
 import org.apache.sysds.runtime.instructions.spark.data.LineageObject;
 import org.apache.sysds.runtime.instructions.spark.data.PartitionedBlock;
@@ -74,20 +93,13 @@ import org.apache.sysds.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.runtime.meta.TensorCharacteristics;
+import org.apache.sysds.runtime.util.CommonThreadPool;
 import org.apache.sysds.runtime.util.HDFSTool;
 import org.apache.sysds.runtime.util.UtilFunctions;
 import org.apache.sysds.utils.MLContextProxy;
 import org.apache.sysds.utils.Statistics;
-import scala.Tuple2;
 
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.concurrent.Future;
-import java.util.stream.Collectors;
-import java.util.stream.LongStream;
+import scala.Tuple2;
 
 
 public class SparkExecutionContext extends ExecutionContext
@@ -161,12 +173,24 @@ public class SparkExecutionContext extends ExecutionContext
 	}
 
 	public void close() {
-		synchronized( SparkExecutionContext.class ) {
-			if( _spctx != null ) {
-				//stop the spark context if existing
+		synchronized( SparkExecutionContext.class) {
+			if(_spctx != null) {
+				Logger spL = Logger.getLogger("org.apache.spark.network.client.TransportResponseHandler");
+				spL.setLevel(Level.FATAL);
+				OutputStream buff = new OutputStream() {
+					@Override
+					public void write(int b) {
+						// do Nothing
+					}
+				};
+				PrintStream old = System.err;
+				System.setErr(new PrintStream(buff));
+				// stop the spark context if existing
 				_spctx.stop();
-				//make sure stopped context is never used again
+				// make sure stopped context is never used again
 				_spctx = null;
+				System.setErr(old);
+				spL.setLevel(Level.ERROR);
 			}
 		}
 	}
@@ -195,23 +219,18 @@ public class SparkExecutionContext extends ExecutionContext
 		}
 		else
 		{
-			if(DMLScript.USE_LOCAL_SPARK_CONFIG) {
-				// For now set 4 cores for integration testing :)
-				SparkConf conf = createSystemDSSparkConf()
-						.setMaster("local[" +
-							ConfigurationManager.getDMLConfig().getTextValue(DMLConfig.LOCAL_SPARK_NUM_THREADS)+
-							"]").setAppName("My local integration test app");
-				// This is discouraged in spark but have added only for those testcase that cannot stop the context properly
-				// conf.set("spark.driver.allowMultipleContexts", "true");
-				conf.set("spark.ui.enabled", "false");
-				_spctx = new JavaSparkContext(conf);
-			}
-			else //default cluster setup
-			{
-				//setup systemds-preferred spark configuration (w/o user choice)
-				SparkConf conf = createSystemDSSparkConf();
-				_spctx = new JavaSparkContext(conf);
-			}
+			final SparkConf conf = createSystemDSSparkConf();
+			final DMLConfig dmlConfig= ConfigurationManager.getDMLConfig();
+			// Use Spark local config, if already set to True ... keep true, otherwise look up if it should be local.
+			DMLScript.USE_LOCAL_SPARK_CONFIG = DMLScript.USE_LOCAL_SPARK_CONFIG ? true : dmlConfig.getBooleanValue(DMLConfig.USE_LOCAL_SPARK_CONFIG);
+			
+			if(DMLScript.USE_LOCAL_SPARK_CONFIG)
+				setLocalConfSettings(conf);
+			
+			_spctx = createContext(conf);
+
+			if(DMLScript.USE_LOCAL_SPARK_CONFIG)
+				_spctx.setCheckpointDir("/tmp/systemds_spark_cache_" + DMLScript.getUUID());
 
 			_parRDDs.clear();
 		}
@@ -233,6 +252,30 @@ public class SparkExecutionContext extends ExecutionContext
 		if( DMLScript.STATISTICS ){
 			Statistics.setSparkCtxCreateTime(System.nanoTime()-t0);
 		}
+	}
+
+
+	private static JavaSparkContext createContext(SparkConf conf){
+		try{
+			return new JavaSparkContext(conf);
+		} 
+		catch(Exception e){
+			if(e.getMessage().contains("A master URL must be set in your configuration")){
+				LOG.error("Error constructing Spark Context, falling back to local Spark context creation");
+				setLocalConfSettings(conf);
+				return createContext(conf);
+			}
+			else
+				throw new DMLException("Error while creating Spark context", e);
+		}
+	}
+
+	private static void setLocalConfSettings(SparkConf conf){
+		final String threads = ConfigurationManager.getDMLConfig().getTextValue(DMLConfig.LOCAL_SPARK_NUM_THREADS);
+		conf.setMaster("local[" + threads + "]");
+		conf.setAppName("LocalSparkContextApp");
+		conf.set("spark.ui.showConsoleProgress", "false");
+		conf.set("spark.ui.enabled", "false");
 	}
 
 	/**
@@ -350,7 +393,7 @@ public class SparkExecutionContext extends ExecutionContext
 		return getRDDHandleForMatrixObject(mo, fmt, -1, true);
 	}
 	
-	@SuppressWarnings({ "unchecked", "resource" })
+	@SuppressWarnings({ "unchecked" })
 	public JavaPairRDD<?,?> getRDDHandleForMatrixObject( MatrixObject mo, FileFormat fmt, int numParts, boolean inclEmpty ) {
 		//NOTE: MB this logic should be integrated into MatrixObject
 		//However, for now we cannot assume that spark libraries are
@@ -425,7 +468,6 @@ public class SparkExecutionContext extends ExecutionContext
 		return rdd;
 	}
 
-	@SuppressWarnings("resource")
 	public JavaPairRDD<?, ?> getRDDHandleForTensorObject(TensorObject to, FileFormat fmt, int numParts, boolean inclEmpty) {
 		//NOTE: MB this logic should be integrated into MatrixObject
 		//However, for now we cannot assume that spark libraries are
@@ -505,7 +547,7 @@ public class SparkExecutionContext extends ExecutionContext
 	 * @param fmt file format type
 	 * @return JavaPairRDD handle for a frame object
 	 */
-	@SuppressWarnings({ "unchecked", "resource" })
+	@SuppressWarnings({ "unchecked" })
 	public JavaPairRDD<?,?> getRDDHandleForFrameObject( FrameObject fo, FileFormat fmt )
 	{
 		//NOTE: MB this logic should be integrated into FrameObject
@@ -590,11 +632,12 @@ public class SparkExecutionContext extends ExecutionContext
 			brBlock = cd.getBroadcastHandle().getNonPartitionedBroadcast();
 		}
 
+		//TODO: synchronize
 		if (brBlock == null) {
 			//create new broadcast handle (never created, evicted)
 			// account for overwritten invalid broadcast (e.g., evicted)
 			if (cd.getBroadcastHandle() != null)
-				CacheableData.addBroadcastSize(-cd.getBroadcastHandle().getNonPartitionedBroadcastSize());
+				CacheableData.addBroadcastSize(-cd.getBroadcastHandle().getSize());
 
 			// read the matrix block
 			CacheBlock cb = cd.acquireRead();
@@ -609,7 +652,7 @@ public class SparkExecutionContext extends ExecutionContext
 				}
 				cd.getBroadcastHandle().setNonPartitionedBroadcast(brBlock,
 					OptimizerUtils.estimateSize(cd.getDataCharacteristics()));
-				CacheableData.addBroadcastSize(cd.getBroadcastHandle().getNonPartitionedBroadcastSize());
+				CacheableData.addBroadcastSize(cd.getBroadcastHandle().getSize());
 
 				if (DMLScript.STATISTICS) {
 					Statistics.accSparkBroadCastTime(System.nanoTime() - t0);
@@ -634,55 +677,60 @@ public class SparkExecutionContext extends ExecutionContext
 
 		PartitionedBroadcast<MatrixBlock> bret = null;
 
-		//reuse existing broadcast handle
-		if (mo.getBroadcastHandle() != null && mo.getBroadcastHandle().isPartitionedBroadcastValid()) {
-			bret = mo.getBroadcastHandle().getPartitionedBroadcast();
-		}
-
-		//create new broadcast handle (never created, evicted)
-		if (bret == null) {
-			//account for overwritten invalid broadcast (e.g., evicted)
-			if (mo.getBroadcastHandle() != null)
-				CacheableData.addBroadcastSize(-mo.getBroadcastHandle().getPartitionedBroadcastSize());
-
-			//obtain meta data for matrix
-			int blen = (int) mo.getBlocksize();
-
-			//create partitioned matrix block and release memory consumed by input
-			MatrixBlock mb = mo.acquireRead();
-			PartitionedBlock<MatrixBlock> pmb = new PartitionedBlock<>(mb, blen);
-			mo.release();
-
-			//determine coarse-grained partitioning
-			int numPerPart = PartitionedBroadcast.computeBlocksPerPartition(mo.getNumRows(), mo.getNumColumns(), blen);
-			int numParts = (int) Math.ceil((double) pmb.getNumRowBlocks() * pmb.getNumColumnBlocks() / numPerPart);
-			Broadcast<PartitionedBlock<MatrixBlock>>[] ret = new Broadcast[numParts];
-
-			//create coarse-grained partitioned broadcasts
-			if (numParts > 1) {
-				Arrays.parallelSetAll(ret, i -> createPartitionedBroadcast(pmb, numPerPart, i));
-			} else { //single partition
-				ret[0] = getSparkContext().broadcast(pmb);
-				if (!isLocalMaster())
-					pmb.clearBlocks();
+		synchronized (mo) {  //synchronize with the async. broadcast thread
+			//reuse existing broadcast handle
+			if (mo.getBroadcastHandle() != null && mo.getBroadcastHandle().isPartitionedBroadcastValid()) {
+				bret = mo.getBroadcastHandle().getPartitionedBroadcast();
 			}
-			
-			bret = new PartitionedBroadcast<>(ret, mo.getDataCharacteristics());
-			// create the broadcast handle if the matrix or frame has never been broadcasted
-			if (mo.getBroadcastHandle() == null) {
-				mo.setBroadcastHandle(new BroadcastObject<MatrixBlock>());
+
+			//create new broadcast handle (never created, evicted)
+			if (bret == null) {
+				//account for overwritten invalid broadcast (e.g., evicted)
+				if (mo.getBroadcastHandle() != null)
+					CacheableData.addBroadcastSize(-mo.getBroadcastHandle().getSize());
+
+				//obtain meta data for matrix
+				int blen = (int) mo.getBlocksize();
+
+				//create partitioned matrix block and release memory consumed by input
+				MatrixBlock mb = mo.acquireRead();
+				PartitionedBlock<MatrixBlock> pmb = new PartitionedBlock<>(mb, blen);
+				mo.release();
+
+				//determine coarse-grained partitioning
+				int numPerPart = PartitionedBroadcast.computeBlocksPerPartition(mo.getNumRows(), mo.getNumColumns(), blen);
+				int numParts = (int) Math.ceil((double) pmb.getNumRowBlocks() * pmb.getNumColumnBlocks() / numPerPart);
+				Broadcast<PartitionedBlock<MatrixBlock>>[] ret = new Broadcast[numParts];
+
+				//create coarse-grained partitioned broadcasts
+				if (numParts > 1) {
+					Arrays.parallelSetAll(ret, i -> createPartitionedBroadcast(pmb, numPerPart, i));
+				} else { //single partition
+					ret[0] = getSparkContext().broadcast(pmb);
+					if (!isLocalMaster())
+						pmb.clearBlocks();
+				}
+				
+				bret = new PartitionedBroadcast<>(ret, mo.getDataCharacteristics());
+				// create the broadcast handle if the matrix or frame has never been broadcasted
+				if (mo.getBroadcastHandle() == null) {
+					mo.setBroadcastHandle(new BroadcastObject<MatrixBlock>());
+				}
+				mo.getBroadcastHandle().setPartitionedBroadcast(bret,
+					OptimizerUtils.estimatePartitionedSizeExactSparsity(mo.getDataCharacteristics()));
+				CacheableData.addBroadcastSize(mo.getBroadcastHandle().getSize());
+
+				if (DMLScript.STATISTICS) {
+					Statistics.accSparkBroadCastTime(System.nanoTime() - t0);
+					Statistics.incSparkBroadcastCount(1);
+				}
 			}
-			mo.getBroadcastHandle().setPartitionedBroadcast(bret,
-				OptimizerUtils.estimatePartitionedSizeExactSparsity(mo.getDataCharacteristics()));
-			CacheableData.addBroadcastSize(mo.getBroadcastHandle().getPartitionedBroadcastSize());
 		}
-
-		if (DMLScript.STATISTICS) {
-			Statistics.accSparkBroadCastTime(System.nanoTime() - t0);
-			Statistics.incSparkBroadcastCount(1);
-		}
-
 		return bret;
+	}
+	
+	public void setBroadcastHandle(MatrixObject mo) {
+		getBroadcastForMatrixObject(mo);
 	}
 
 	@SuppressWarnings("unchecked")
@@ -700,7 +748,7 @@ public class SparkExecutionContext extends ExecutionContext
 		if (bret == null) {
 			//account for overwritten invalid broadcast (e.g., evicted)
 			if (to.getBroadcastHandle() != null)
-				CacheableData.addBroadcastSize(-to.getBroadcastHandle().getPartitionedBroadcastSize());
+				CacheableData.addBroadcastSize(-to.getBroadcastHandle().getSize());
 
 			//obtain meta data for matrix
 			DataCharacteristics dc = to.getDataCharacteristics();
@@ -731,14 +779,13 @@ public class SparkExecutionContext extends ExecutionContext
 			}
 			to.getBroadcastHandle().setPartitionedBroadcast(bret,
 					OptimizerUtils.estimatePartitionedSizeExactSparsity(to.getDataCharacteristics()));
-			CacheableData.addBroadcastSize(to.getBroadcastHandle().getPartitionedBroadcastSize());
-		}
+			CacheableData.addBroadcastSize(to.getBroadcastHandle().getSize());
 
-		if (DMLScript.STATISTICS) {
-			Statistics.accSparkBroadCastTime(System.nanoTime() - t0);
-			Statistics.incSparkBroadcastCount(1);
+			if (DMLScript.STATISTICS) {
+				Statistics.accSparkBroadCastTime(System.nanoTime() - t0);
+				Statistics.incSparkBroadcastCount(1);
+			}
 		}
-
 		return bret;
 	}
 
@@ -767,7 +814,7 @@ public class SparkExecutionContext extends ExecutionContext
 		if (bret == null) {
 			//account for overwritten invalid broadcast (e.g., evicted)
 			if (fo.getBroadcastHandle() != null)
-				CacheableData.addBroadcastSize(-fo.getBroadcastHandle().getPartitionedBroadcastSize());
+				CacheableData.addBroadcastSize(-fo.getBroadcastHandle().getSize());
 
 			//obtain meta data for frame
 			int blen = OptimizerUtils.getDefaultFrameSize();
@@ -798,14 +845,13 @@ public class SparkExecutionContext extends ExecutionContext
 			
 			fo.getBroadcastHandle().setPartitionedBroadcast(bret,
 				OptimizerUtils.estimatePartitionedSizeExactSparsity(fo.getDataCharacteristics()));
-			CacheableData.addBroadcastSize(fo.getBroadcastHandle().getPartitionedBroadcastSize());
-		}
+			CacheableData.addBroadcastSize(fo.getBroadcastHandle().getSize());
 
-		if (DMLScript.STATISTICS) {
-			Statistics.accSparkBroadCastTime(System.nanoTime() - t0);
-			Statistics.incSparkBroadcastCount(1);
+			if (DMLScript.STATISTICS) {
+				Statistics.accSparkBroadCastTime(System.nanoTime() - t0);
+				Statistics.incSparkBroadcastCount(1);
+			}
 		}
-
 		return bret;
 	}
 	
@@ -920,7 +966,7 @@ public class SparkExecutionContext extends ExecutionContext
 			int row_offset = (int)blockRow*mc.getBlocksize();
 			int col_offset = (int)blockCol*mc.getBlocksize();
 			block = mb.slice( row_offset, row_offset+maxRow-1,
-				col_offset, col_offset+maxCol-1, block );
+				col_offset, col_offset+maxCol-1, false, block );
 			//create key-value pair
 			return new Tuple2<>(new MatrixIndexes(blockRow+1, blockCol+1), block);
 		}
@@ -994,100 +1040,156 @@ public class SparkExecutionContext extends ExecutionContext
 	}
 
 	/**
-	 * Utility method for creating a single matrix block out of a binary block RDD.
-	 * Note that this collect call might trigger execution of any pending transformations.
+	 * Utility method for creating a single matrix block out of a binary block RDD. Note that this collect call might
+	 * trigger execution of any pending transformations.
 	 *
-	 * NOTE: This is an unguarded utility function, which requires memory for both the output matrix
-	 * and its collected, blocked representation.
+	 * NOTE: This is an unguarded utility function, which requires memory for both the output matrix and its collected,
+	 * blocked representation.
 	 *
-	 * @param rdd JavaPairRDD for matrix block
+	 * @param rdd  JavaPairRDD for matrix block
 	 * @param rlen number of rows
 	 * @param clen number of columns
 	 * @param blen block length
-	 * @param nnz number of non-zeros
-	 * @return matrix block
+	 * @param nnz  number of non-zeros
+	 * @return Local matrix block
 	 */
 	public static MatrixBlock toMatrixBlock(JavaPairRDD<MatrixIndexes,MatrixBlock> rdd, int rlen, int clen, int blen, long nnz) {
 		long t0 = DMLScript.STATISTICS ? System.nanoTime() : 0;
+		final Boolean singleBlock = rlen <= blen && clen <= blen ;
+		final MatrixBlock out = singleBlock ? toMatrixBlockSingleBlock(rdd, rlen, clen) : toMatrixBlockMultiBlock(rdd, rlen, clen, blen, nnz);
 
-		MatrixBlock out = null;
-
-		if( rlen <= blen && clen <= blen ) //SINGLE BLOCK
-		{
-			//special case without copy and nnz maintenance
-			List<Tuple2<MatrixIndexes,MatrixBlock>> list = rdd.collect();
-
-			if( list.size()>1 )
-				throw new DMLRuntimeException("Expecting no more than one result block.");
-			else if( list.size()==1 )
-				out = list.get(0)._2();
-			else //empty (e.g., after ops w/ outputEmpty=false)
-				out = new MatrixBlock(rlen, clen, true);
-			out.examSparsity();
-		}
-		else //MULTIPLE BLOCKS
-		{
-			//determine target sparse/dense representation
-			long lnnz = (nnz >= 0) ? nnz : (long)rlen * clen;
-			boolean sparse = MatrixBlock.evalSparseFormatInMemory(rlen, clen, lnnz);
-
-			//create output matrix block (w/ lazy allocation)
-			out = new MatrixBlock(rlen, clen, sparse, lnnz);
-			
-			//kickoff asynchronous allocation
-			Future<MatrixBlock> fout = out.allocateBlockAsync();
-			
-			//trigger pending RDD operations and collect blocks
-			List<Tuple2<MatrixIndexes,MatrixBlock>> list = rdd.collect();
-			out = IOUtilFunctions.get(fout); //wait for allocation
-
-			//copy blocks one-at-a-time into output matrix block
-			long aNnz = 0;
-			for( Tuple2<MatrixIndexes,MatrixBlock> keyval : list )
-			{
-				//unpack index-block pair
-				MatrixIndexes ix = keyval._1();
-				MatrixBlock block = keyval._2();
-				
-				//compute row/column block offsets
-				int row_offset = (int)(ix.getRowIndex()-1)*blen;
-				int col_offset = (int)(ix.getColumnIndex()-1)*blen;
-				int rows = block.getNumRows();
-				int cols = block.getNumColumns();
-				
-				//handle compressed blocks (decompress for robustness)
-				if( block instanceof CompressedMatrixBlock )
-					block = ((CompressedMatrixBlock)block).decompress();
-
-				//append block
-				if( sparse ) { //SPARSE OUTPUT
-					//append block to sparse target in order to avoid shifting, where
-					//we use a shallow row copy in case of MCSR and single column blocks
-					//note: this append requires, for multiple column blocks, a final sort
-					out.appendToSparse(block, row_offset, col_offset, clen>blen);
-				}
-				else { //DENSE OUTPUT
-					out.copy( row_offset, row_offset+rows-1,
-							  col_offset, col_offset+cols-1, block, false );
-				}
-
-				//incremental maintenance nnz
-				aNnz += block.getNonZeros();
-			}
-
-			//post-processing output matrix
-			if( sparse && clen>blen )
-				out.sortSparseRows();
-			out.setNonZeros(aNnz);
-			out.examSparsity();
-		}
-
-		if (DMLScript.STATISTICS) {
+		if (DMLScript.STATISTICS) 
 			Statistics.accSparkCollectTime(System.nanoTime() - t0);
-			Statistics.incSparkCollectCount(1);
+		
+		return out;
+	}
+
+	private static MatrixBlock toMatrixBlockSingleBlock(JavaPairRDD<MatrixIndexes, MatrixBlock> rdd, int rlen,
+		int clen) {
+		// special case without copy and nnz maintenance
+		List<Tuple2<MatrixIndexes, MatrixBlock>> list = rdd.collect();
+		MatrixBlock out;
+
+		if(list.size() > 1)
+			throw new DMLRuntimeException("Expecting no more than one result block but got: " + list.size());
+		else if(list.size() == 1)
+			out = list.get(0)._2();
+		else // empty (e.g., after ops w/ outputEmpty=false)
+			out = new MatrixBlock(rlen, clen, true);
+		out.examSparsity();
+		return out;
+	}
+
+	private static MatrixBlock toMatrixBlockMultiBlock(JavaPairRDD<MatrixIndexes, MatrixBlock> rdd, int rlen, int clen,
+		int blen, long nnz) {
+		// determine target sparse/dense representation
+		final long lnnz = (nnz >= 0) ? nnz : (long) rlen * clen;
+		final boolean sparse = MatrixBlock.evalSparseFormatInMemory(rlen, clen, lnnz);
+
+		// create output matrix block (w/ lazy allocation)
+		MatrixBlock out = new MatrixBlock(rlen, clen, sparse, lnnz);
+
+		// kickoff asynchronous allocation
+		Future<MatrixBlock> fout = out.allocateBlockAsync();
+
+		// trigger pending RDD operations and collect blocks
+		List<Tuple2<MatrixIndexes, MatrixBlock>> list = rdd.collect();
+		out = IOUtilFunctions.get(fout); // wait for allocation
+		
+		LongAdder aNnz = new LongAdder();
+		// copy blocks one-at-a-time into output matrix block
+		blockPartitionsToMatrixBlock(list, out, aNnz,  blen);
+		
+		// post-processing output matrix
+		if(sparse)
+			out.sortSparseRows();
+		out.setNonZeros(aNnz.longValue());
+		out.examSparsity();
+		return out;
+	}
+
+	private static void blockPartitionsToMatrixBlock(List<Tuple2<MatrixIndexes, MatrixBlock>> tuples, MatrixBlock out,
+		LongAdder aNnz, int blen) {
+		if(out.isInSparseFormat())
+			blockPartitionsToMatrixBlockSingleThread(tuples, out, aNnz, blen);
+		else
+			blockPartitionsToMatrixBlockMultiThreaded(tuples, out, aNnz, blen);
+	}
+
+	private static void blockPartitionsToMatrixBlockSingleThread(List<Tuple2<MatrixIndexes, MatrixBlock>> tuples,
+		MatrixBlock out, LongAdder aNnz, int blen) {
+		final boolean sparse = out.isInSparseFormat();
+		final boolean sparseCopyShallow = sparse && out.getNumColumns() <= blen;
+		for(Tuple2<MatrixIndexes, MatrixBlock> tuple : tuples)
+			blockPartitionToMatrixBlock(tuple, out, aNnz, blen, sparseCopyShallow);
+	}
+
+	private static void blockPartitionsToMatrixBlockMultiThreaded(List<Tuple2<MatrixIndexes, MatrixBlock>> tuples,
+		MatrixBlock out, LongAdder aNnz, int blen) {
+		try {
+			final int k = InfrastructureAnalyzer.getLocalParallelism();
+			final ExecutorService pool = CommonThreadPool.get(k);
+			final ArrayList<BlockPartitionToMatrixBlockTask> tasks = new ArrayList<>();
+			final int tSize = tuples.size();
+			final int blockSize = Math.max(tSize / k / 2, 1);
+			for(int i = 0; i < tSize; i += blockSize)
+				tasks.add(new BlockPartitionToMatrixBlockTask(tuples, i, Math.min(i + blockSize, tSize), out, aNnz, blen, false));
+			// for(Tuple2<MatrixIndexes, MatrixBlock> tuple : tuples)
+
+			for(Future<Object> f : pool.invokeAll(tasks))
+				f.get();
+
+			pool.shutdown();
+		}
+		catch(InterruptedException | ExecutionException ex) {
+			throw new DMLRuntimeException("Parallel block partitions to matrix block failed", ex);
+		}
+	}
+
+	private static void blockPartitionToMatrixBlock(Tuple2<MatrixIndexes, MatrixBlock> tuple, MatrixBlock out,
+		LongAdder aNnz, int blen, boolean sparseCopyShallow) {
+		// unpack index-block pair
+		final MatrixIndexes ix = tuple._1();
+		final MatrixBlock block = tuple._2();
+
+		// compute row/column block offsets
+		final int row_offset = (int) (ix.getRowIndex() - 1) * blen;
+		final int col_offset = (int) (ix.getColumnIndex() - 1) * blen;
+
+		// Add the values of this block into the output block.
+		block.putInto(out, row_offset, col_offset, sparseCopyShallow);
+
+		// incremental maintenance nnz
+		aNnz.add(block.getNonZeros());
+	}
+
+	private static class BlockPartitionToMatrixBlockTask implements Callable<Object> {
+		private final List<Tuple2<MatrixIndexes, MatrixBlock>> _tuples;
+		private final int _start;
+		private final int _end;
+		private final MatrixBlock _out;
+		private final LongAdder _aNnz;
+		private final int _blen;
+		private final boolean _sparseCopyShallow;
+
+		protected BlockPartitionToMatrixBlockTask(List<Tuple2<MatrixIndexes, MatrixBlock>> tuples, int start, int end, MatrixBlock out,
+		LongAdder aNnz, int blen, boolean sparseCopyShallow){
+			_tuples = tuples;
+			_start = start;
+			_end = end;
+			_out = out;
+			_aNnz = aNnz;
+			_blen = blen;
+			_sparseCopyShallow = sparseCopyShallow;
 		}
 
-		return out;
+		@Override
+		public Object call(){
+			for(int i = _start; i < _end; i ++)
+				blockPartitionToMatrixBlock(_tuples.get(i), _out, _aNnz, _blen, _sparseCopyShallow);
+			
+			return null;
+		}
 	}
 
 	@SuppressWarnings("unchecked")
@@ -1140,10 +1242,9 @@ public class SparkExecutionContext extends ExecutionContext
 		out.recomputeNonZeros();
 		out.examSparsity();
 
-		if (DMLScript.STATISTICS) {
+		if (DMLScript.STATISTICS) 
 			Statistics.accSparkCollectTime(System.nanoTime() - t0);
-			Statistics.incSparkCollectCount(1);
-		}
+		
 
 		return out;
 	}
@@ -1187,10 +1288,9 @@ public class SparkExecutionContext extends ExecutionContext
 
 		// TODO post-processing output tensor (nnz, sparsity)
 
-		if (DMLScript.STATISTICS) {
+		if (DMLScript.STATISTICS) 
 			Statistics.accSparkCollectTime(System.nanoTime() - t0);
-			Statistics.incSparkCollectCount(1);
-		}
+
 		return out;
 	}
 
@@ -1209,10 +1309,8 @@ public class SparkExecutionContext extends ExecutionContext
 			out.setBlock((int)ix.getRowIndex(), (int)ix.getColumnIndex(), block);
 		}
 
-		if (DMLScript.STATISTICS) {
+		if (DMLScript.STATISTICS) 
 			Statistics.accSparkCollectTime(System.nanoTime() - t0);
-			Statistics.incSparkCollectCount(1);
-		}
 
 		return out;
 	}
@@ -1250,10 +1348,8 @@ public class SparkExecutionContext extends ExecutionContext
 			}
 		}
 
-		if (DMLScript.STATISTICS) {
+		if (DMLScript.STATISTICS) 
 			Statistics.accSparkCollectTime(System.nanoTime() - t0);
-			Statistics.incSparkCollectCount(1);
-		}
 
 		return out;
 	}
@@ -1264,9 +1360,14 @@ public class SparkExecutionContext extends ExecutionContext
 		JavaPairRDD<MatrixIndexes,MatrixBlock> lrdd = (JavaPairRDD<MatrixIndexes, MatrixBlock>) rdd.getRDD();
 		InputOutputInfo oinfo = InputOutputInfo.get(DataType.MATRIX, fmt);
 		
+		// if compression is enabled decompress all blocks before writing to disk to ensure type of MatrixBlock.
+		if(ConfigurationManager.isCompressionEnabled())
+			lrdd = lrdd.mapValues(new DeCompressionSPInstruction.DeCompressionFunction());
+
 		//piggyback nnz maintenance on write
 		LongAccumulator aNnz = getSparkContextStatic().sc().longAccumulator("nnz");
 		lrdd = lrdd.mapValues(new ComputeBinaryBlockNnzFunction(aNnz));
+
 
 		//save file is an action which also triggers nnz maintenance
 		lrdd.saveAsHadoopFile(path,
@@ -1417,7 +1518,7 @@ public class SparkExecutionContext extends ExecutionContext
 				if( bc != null ) //robustness evictions
 					cleanupBroadcastVariable(bc);
 			}
-			CacheableData.addBroadcastSize(-bob.getNonPartitionedBroadcastSize());
+			CacheableData.addBroadcastSize(-bob.getSize());
 		}
 
 		//recursively process lineage children
@@ -1471,6 +1572,10 @@ public class SparkExecutionContext extends ExecutionContext
 		JavaPairRDD<MatrixIndexes,MatrixBlock> in = (JavaPairRDD<MatrixIndexes, MatrixBlock>)
 			getRDDHandleForMatrixObject(mo, FileFormat.BINARY);
 
+		//avoid unnecessary repartitioning/caching if data already partitioned
+		if( SparkUtils.isHashPartitioned(in) )
+			return;
+		
 		//avoid unnecessary caching of input in order to reduce memory pressure
 		if( mo.getRDDHandle().allowsShortCircuitRead()
 			&& isRDDMarkedForCaching(in.id()) && !isRDDCached(in.id()) ) {
@@ -1557,13 +1662,11 @@ public class SparkExecutionContext extends ExecutionContext
 		_poolBuff[pool] = false;
 	}
 
-	@SuppressWarnings("resource")
 	private boolean isRDDMarkedForCaching( int rddID ) {
 		JavaSparkContext jsc = getSparkContext();
 		return jsc.sc().getPersistentRDDs().contains(rddID);
 	}
 
-	@SuppressWarnings("resource")
 	public boolean isRDDCached( int rddID ) {
 		//check that rdd is marked for caching
 		JavaSparkContext jsc = getSparkContext();
@@ -1781,7 +1884,6 @@ public class SparkExecutionContext extends ExecutionContext
 				//get default parallelism (total number of executors and cores)
 				//note: spark context provides this information while conf does not
 				//(for num executors we need to correct for driver and local mode)
-				@SuppressWarnings("resource")
 				JavaSparkContext jsc = getSparkContextStatic();
 				_numExecutors = Math.max(jsc.sc().getExecutorMemoryStatus().size() - 1, 1);
 				_defaultPar = jsc.defaultParallelism();

@@ -1,4 +1,4 @@
-#-------------------------------------------------------------
+# -------------------------------------------------------------
 #
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
@@ -17,12 +17,12 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-#-------------------------------------------------------------
+# -------------------------------------------------------------
 
 import os
-from itertools import chain
-from typing import Iterable, Dict
 from importlib.util import find_spec
+from itertools import chain
+from typing import Dict, Iterable
 
 from systemds.utils.consts import MODULE_NAME
 
@@ -48,3 +48,34 @@ def get_module_dir() -> os.PathLike:
     """
     spec = find_spec(MODULE_NAME)
     return spec.submodule_search_locations[0]
+
+
+def get_slice_string(i):
+    if isinstance(i, list):
+        raise ValueError("Not Supported list query")
+    if isinstance(i, tuple):
+        return f'{get_slice_string(i[0])},{get_slice_string(i[1])}'
+    elif isinstance(i, slice):
+        if i.step:
+            raise ValueError("Invalid to slice with step in systemds")
+        elif i.start == None and i.stop == None:
+            return ''
+        elif i.start == None or i.stop == None:
+            raise NotImplementedError("Not Implemented slice with dynamic end")
+        else:
+            # + 1 since R and systemDS is 1 indexed.
+            return f'{i.start+1}:{i.stop}'
+    else:
+        # + 1 since R and systemDS is 1 indexed.
+        sliceIns = i+1
+    return sliceIns
+
+
+def check_is_empty_slice(i):
+    return isinstance(i, slice) and i.start == None and i.stop == None and i.step == None
+
+
+def check_no_less_than_zero(i: list):
+    for x in i:
+        if(x < 0):
+            raise ValueError("Negative index not supported in systemds")

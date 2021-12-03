@@ -19,10 +19,14 @@
 
 package org.apache.sysds.hops;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map.Entry;
 
+import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.sysds.common.Types.AggOp;
@@ -33,14 +37,17 @@ import org.apache.sysds.common.Types.OpOp2;
 import org.apache.sysds.common.Types.ParamBuiltinOp;
 import org.apache.sysds.common.Types.ReOrgOp;
 import org.apache.sysds.common.Types.ValueType;
+import org.apache.sysds.hops.FunctionOp.FunctionType;
 import org.apache.sysds.hops.rewrite.HopRewriteUtils;
 import org.apache.sysds.lops.Data;
 import org.apache.sysds.lops.GroupedAggregate;
 import org.apache.sysds.lops.GroupedAggregateM;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.lops.ParameterizedBuiltin;
+import org.apache.sysds.parser.DMLProgram;
 import org.apache.sysds.parser.Statement;
+import org.apache.sysds.runtime.instructions.cp.ParamservBuiltinCPInstruction;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.runtime.util.UtilFunctions;
@@ -182,13 +189,15 @@ public class ParameterizedBuiltinOp extends MultiThreadedHop {
 			case REPLACE:
 			case LOWER_TRI:
 			case UPPER_TRI:
+			case TOKENIZE:
 			case TRANSFORMAPPLY:
 			case TRANSFORMDECODE:
 			case TRANSFORMCOLMAP:
 			case TRANSFORMMETA:
 			case TOSTRING:
 			case PARAMSERV:
-			case LIST: {
+			case LIST:
+			case AUTODIFF:{
 				ExecType et = optFindExecType();
 				ParameterizedBuiltin pbilop = new ParameterizedBuiltin(
 					inputlops, _op, getDataType(), getValueType(), et);
@@ -203,7 +212,7 @@ public class ParameterizedBuiltinOp extends MultiThreadedHop {
 		
 		//add reblock/checkpoint lops if necessary
 		constructAndSetLopsDataFlowProperties();
-		
+
 		return getLops();
 	}
 	
@@ -460,18 +469,18 @@ public class ParameterizedBuiltinOp extends MultiThreadedHop {
 			if (numNonZeroes < 0)
 				numNonZeroes = specifiedRows * specifiedCols;
 			long numRows = getInput().get(0).getDim1();
-			if (numRows < 0) 	// If number of rows is not known, set to default
+			if (numRows < 0) // If number of rows is not known, set to default
 				numRows = specifiedRows;
 			long numCols = getInput().get(0).getDim2();
-			if (numCols < 0)	// If number of columns is not known, set to default
+			if (numCols < 0) // If number of columns is not known, set to default
 				numCols = specifiedCols;
 			
 			// Assume Defaults : 100 * 100, sep = " ", linesep = "\n", sparse = false
 			// String size in bytes is 36 + number_of_chars * 2
 			final long DEFAULT_SIZE = 36 + 2 *
-					(100 * 100 * AVERAGE_CHARS_PER_VALUE 	// Length for digits  
-					+ 1 * 100 * 99 							// Length for separator chars
-					+ 1* 100) ;								// Length for line separator chars
+					(100 * 100 * AVERAGE_CHARS_PER_VALUE // Length for digits
+					+ 1 * 100 * 99                       // Length for separator chars
+					+ 1* 100);                           // Length for line separator chars
 			
 			try {
 			
@@ -499,14 +508,14 @@ public class ParameterizedBuiltinOp extends MultiThreadedHop {
 				long numberOfChars = -1;
 				
 				if (sparsePrint){
-					numberOfChars = AVERAGE_CHARS_PER_VALUE * numNonZeroes			// Length for value digits
-									+ AVERAGE_CHARS_PER_INDEX * 2L * numNonZeroes	// Length for row & column index
-									+ sep.length() * 2L * numNonZeroes				// Length for separator chars
-									+ linesep.length() * numNonZeroes;				// Length for line separator chars
+					numberOfChars = AVERAGE_CHARS_PER_VALUE * numNonZeroes         // Length for value digits
+									+ AVERAGE_CHARS_PER_INDEX * 2L * numNonZeroes  // Length for row & column index
+									+ sep.length() * 2L * numNonZeroes             // Length for separator chars
+									+ linesep.length() * numNonZeroes;             // Length for line separator chars
 				} else {
-					numberOfChars = AVERAGE_CHARS_PER_VALUE * numRows * numCols 	// Length for digits
-									+ sep.length() * numRows * (numCols - 1) 		// Length for separator chars
-									+ linesep.length() * numRows;					// Length for line separator chars
+					numberOfChars = AVERAGE_CHARS_PER_VALUE * numRows * numCols    // Length for digits
+									+ sep.length() * numRows * (numCols - 1)       // Length for separator chars
+									+ linesep.length() * numRows;                  // Length for line separator chars
 				}
 				
 				/*
@@ -520,14 +529,13 @@ public class ParameterizedBuiltinOp extends MultiThreadedHop {
 				 */
 				
 				return (36 + numberOfChars * 2);
-				
-			} catch (HopsException e){
+			}
+			catch (HopsException e){
 				LOG.warn("Invalid values when trying to compute dims1, dims2 & nnz", e);
-				
 				return DEFAULT_SIZE;
 			}
-			
-		} else {
+		}
+		else {
 			double sparsity = OptimizerUtils.getSparsity(dim1, dim2, nnz);
 			return OptimizerUtils.estimateSizeExactSparsity(dim1, dim2, sparsity);
 		}
@@ -692,7 +700,7 @@ public class ParameterizedBuiltinOp extends MultiThreadedHop {
 	}
 	
 	@Override
-	protected ExecType optFindExecType() 
+	protected ExecType optFindExecType(boolean transitive)
 	{
 		checkAndSetForcedPlatform();
 		
@@ -959,12 +967,56 @@ public class ParameterizedBuiltinOp extends MultiThreadedHop {
 		return ret;
 	}
 
+	public boolean isKnownNGroups() {
+		try {
+			Hop ngroups = getParameterHop(Statement.GAGG_NUM_GROUPS);
+			return (ngroups != null 
+				&& (ngroups instanceof LiteralOp | ngroups instanceof DataOp));
+		}
+		catch(Exception ex) {
+			LOG.warn("Known groups check exception: " + ex.getMessage());
+		}
+		return false;
+	}
+	
 	public boolean isTargetDiagInput() {
 		Hop targetHop = getTargetHop();
 		//input vector (guarantees diagV2M), implies remove rows
 		return (   targetHop instanceof ReorgOp 
 			&& ((ReorgOp)targetHop).getOp()==ReOrgOp.DIAG 
 			&& targetHop.getInput().get(0).getDim2() == 1 ); 
+	}
+	
+	public List<FunctionOp> getParamservPseudoFunctionCalls() {
+		try {
+			String supd[] = DMLProgram.splitFunctionKey(((LiteralOp)getParameterHop("upd")).getStringValue());
+			String sagg[] = DMLProgram.splitFunctionKey(((LiteralOp)getParameterHop("agg")).getStringValue());
+			String sval[] = getParameterHop("val") == null ? null :
+				DMLProgram.splitFunctionKey(((LiteralOp)getParameterHop("val")).getStringValue());
+			Hop model = getParameterHop("model");
+			Hop hyp = getParameterHop("hyperparams");
+			Hop batch = ObjectUtils.defaultIfNull(getParameterHop("batchsize"),
+				new LiteralOp(ParamservBuiltinCPInstruction.DEFAULT_BATCH_SIZE));
+			Hop X = HopRewriteUtils.createIndexingOp(getParameterHop("features"), batch);
+			Hop y = HopRewriteUtils.createIndexingOp(getParameterHop("labels"), batch);
+			FunctionOp fupd = new FunctionOp(FunctionType.DML, supd[0], supd[1],
+				new String[] {"model","hyperparams","features","labels"}, Arrays.asList(model, hyp, X, y),
+				new String[] {"gradients"}, false, true); //pseudo fcall
+			FunctionOp fagg = new FunctionOp(FunctionType.DML, sagg[0], sagg[1],
+				new String[] {"model","hyperparams","gradients"}, Arrays.asList(model, hyp, fupd),
+				new String[] {"model"}, false, true); //pseudo fcall
+			FunctionOp fval = sval == null ? null : new FunctionOp(FunctionType.DML, sval[0], sval[1],
+				new String[] {"model","hyperparams","valfeatures","vallabels"}, Arrays.asList(model,
+					hyp, getParameterHop("val_features"), getParameterHop("val_labels")),
+				new String[] {"loss","accuracy"}, false, true); //pseudo fcall
+			return (sval == null) ? 
+				Arrays.asList(fupd, fagg) : Arrays.asList(fupd, fagg, fval);
+		}
+		catch(Exception ex) {
+			// silent error handling for robustness (e.g., wrong parameters)
+			// later handled consistenty by the runtime instruction
+			return Collections.emptyList();
+		}
 	}
 
 	/**
@@ -973,16 +1025,19 @@ public class ParameterizedBuiltinOp extends MultiThreadedHop {
 	 */
 	private boolean isRemoveEmptyBcSP() // TODO find if 2 x size needed. 
 	{
-		Hop input = getInput().get(0);
-		
 		//note: both cases (partitioned matrix, and sorted double array), require to
 		//fit the broadcast twice into the local memory budget. Also, the memory 
 		//constraint only needs to take the rhs into account because the output is 
 		//guaranteed to be an aggregate of <=16KB
 		
+		Hop input = getInput().get(0);
+		Hop margin = getParameterHop("margin");
+		boolean col = (margin instanceof LiteralOp) ?
+			((LiteralOp)margin).getStringValue().equals("cols") : false;
+		
 		double size = input.dimsKnown() ? 
-			OptimizerUtils.estimateSize(input.getDim1(), 1) : //dims known and estimate fits
-			input.getOutputMemEstimate();                     //dims unknown but worst-case estimate fits
+			OptimizerUtils.estimateSize(col?input.getDim2():input.getDim1(), 1) : 
+			input.getOutputMemEstimate();
 		
 		return OptimizerUtils.checkSparkBroadcastMemoryBudget(size);
 	}

@@ -19,7 +19,7 @@
 
 package org.apache.sysds.lops;
 
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.instructions.InstructionUtils;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
@@ -53,6 +53,13 @@ public class AppendM extends Lop
 		addInput(input3);
 		input3.addOutput(this);
 		lps.setProperties(inputs, ExecType.SPARK);
+	}
+
+	@Override
+	public Lop getBroadcastInput() {
+		if (getExecType() != ExecType.SPARK)
+			return null;
+		return getInputs().get(1); //frame or matrix
 	}
 	
 	@Override

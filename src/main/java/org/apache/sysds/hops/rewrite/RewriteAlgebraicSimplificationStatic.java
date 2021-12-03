@@ -158,7 +158,7 @@ public class RewriteAlgebraicSimplificationStatic extends HopRewriteRule
 			hi = simplifyBinaryMatrixScalarOperation(hop, hi, i);//e.g., as.scalar(X*s) -> as.scalar(X)*s;
 			hi = pushdownUnaryAggTransposeOperation(hop, hi, i); //e.g., colSums(t(X)) -> t(rowSums(X))
 			hi = pushdownCSETransposeScalarOperation(hop, hi, i);//e.g., a=t(X), b=t(X^2) -> a=t(X), b=t(X)^2 for CSE t(X)
-			hi = pushdownSumBinaryMult(hop, hi, i);              //e.g., sum(lamda*X) -> lamda*sum(X)
+			hi = pushdownSumBinaryMult(hop, hi, i);              //e.g., sum(lambda*X) -> lambda*sum(X)
 			hi = simplifyUnaryPPredOperation(hop, hi, i);        //e.g., abs(ppred()) -> ppred(), others: round, ceil, floor
 			hi = simplifyTransposedAppend(hop, hi, i);           //e.g., t(cbind(t(A),t(B))) -> rbind(A,B);
 			if(OptimizerUtils.ALLOW_OPERATOR_FUSION)
@@ -254,7 +254,7 @@ public class RewriteAlgebraicSimplificationStatic extends HopRewriteRule
 	 * handle removal of unnecessary binary operations
 	 * 
 	 * X/1 or X*1 or 1*X or X-0 -> X
-	 * -1*X or X*-1-> -X		
+	 * -1*X or X*-1-> -X
 	 * 
 	 * @param parent parent high-level operator
 	 * @param hi high-level operator
@@ -777,7 +777,6 @@ public class RewriteAlgebraicSimplificationStatic extends HopRewriteRule
 	 */
 	private static Hop simplifyDistributiveBinaryOperation( Hop parent, Hop hi, int pos )
 	{
-		
 		if( hi instanceof BinaryOp )
 		{
 			BinaryOp bop = (BinaryOp)hi;
@@ -810,9 +809,9 @@ public class RewriteAlgebraicSimplificationStatic extends HopRewriteRule
 						hi = mult;
 						applied = true;
 						
-						LOG.debug("Applied simplifyDistributiveBinaryOperation1");
-					}					
-				}	
+						LOG.debug("Applied simplifyDistributiveBinaryOperation1 (line "+hi.getBeginLine()+").");
+					}
+				}
 				
 				if( !applied && HopRewriteUtils.isBinary(right, OpOp2.MULT) ) //(X-Y*X) -> (1-Y)*X
 				{
@@ -831,7 +830,7 @@ public class RewriteAlgebraicSimplificationStatic extends HopRewriteRule
 						HopRewriteUtils.cleanupUnreferenced(hi, right);
 						hi = mult;
 
-						LOG.debug("Applied simplifyDistributiveBinaryOperation2");
+						LOG.debug("Applied simplifyDistributiveBinaryOperation2 (line "+hi.getBeginLine()+").");
 					}
 				}	
 			}

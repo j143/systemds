@@ -19,12 +19,10 @@
 
 package org.apache.sysds.runtime.functionobjects;
 
-import java.io.Serializable;
-
 import org.apache.sysds.runtime.functionobjects.TernaryValueFunction.ValueFunctionWithConstant;
 import org.apache.sysds.runtime.matrix.operators.BinaryOperator;
 
-public class PlusMultiply extends TernaryValueFunction implements ValueFunctionWithConstant, Serializable
+public class PlusMultiply extends TernaryValueFunction implements ValueFunctionWithConstant
 {
 	private static final long serialVersionUID = 2801982061205871665L;
 
@@ -44,6 +42,10 @@ public class PlusMultiply extends TernaryValueFunction implements ValueFunctionW
 		if ( singleObj == null )
 			singleObj = new PlusMultiply();
 		return singleObj;
+	}
+
+	public double getConstant() {
+		return _cnt;
 	}
 	
 	@Override

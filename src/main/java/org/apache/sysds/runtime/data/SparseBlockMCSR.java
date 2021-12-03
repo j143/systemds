@@ -19,6 +19,8 @@
 
 package org.apache.sysds.runtime.data;
 
+import org.apache.sysds.utils.MemoryEstimates;
+
 /**
  * SparseBlock implementation that realizes a 'modified compressed sparse row'
  * representation, where each compressed row is stored as a separate SparseRow
@@ -46,7 +48,8 @@ public class SparseBlockMCSR extends SparseBlock
 			SparseRow[] orows = ((SparseBlockMCSR)sblock)._rows;
 			_rows = new SparseRow[orows.length];
 			for( int i=0; i<_rows.length; i++ )
-				_rows[i] = new SparseRowVector(orows[i]);
+				if( orows[i] != null )
+					_rows[i] = new SparseRowVector(orows[i]);
 		}
 		//general case SparseBlock
 		else { 
@@ -97,19 +100,25 @@ public class SparseBlockMCSR extends SparseBlock
 	 * @param sparsity sparsity ratio
 	 * @return memory estimate
 	 */
-	public static long estimateMemory(long nrows, long ncols, double sparsity) {
-		double cnnz = Math.max(SparseRowVector.initialCapacity, Math.ceil(sparsity*ncols));
-		double rlen = Math.min(nrows, Math.ceil(sparsity*nrows*ncols));
+	public static long estimateSizeInMemory(long nrows, long ncols, double sparsity) {
+		double nnz = Math.ceil(sparsity*nrows*ncols);
+		double rlen = Math.min(nrows, nnz); // num sparse row objects
+		double cnnz = Math.max(SparseRowVector.initialCapacity, nnz/rlen);
 		
 		//Each sparse row has a fixed overhead of 16B (object) + 12B (3 ints),
 		//24B (int array), 24B (double array), i.e., in total 76B
 		//Each non-zero value requires 12B for the column-index/value pair.
 		//Overheads for arrays, objects, and references refer to 64bit JVMs
 		//If nnz < rows we have guaranteed also empty rows.
-		double size = 16;                //object
-		size += 24 + nrows * 8d;         //references
-		size += rlen * (76 + cnnz * 12); //sparse rows
-		
+		double size = 16; //object
+		size += MemoryEstimates.objectArrayCost((long)nrows); //references
+		long sparseRowSize = 16; // object
+		sparseRowSize += 4*4; // 3 integers + padding
+		sparseRowSize += MemoryEstimates.intArrayCost(0);
+		sparseRowSize += MemoryEstimates.doubleArrayCost(0);
+		sparseRowSize += 12*Math.max(1, cnnz); //avoid bias by down cast for ultra-sparse
+		size += rlen * sparseRowSize; //sparse rows
+
 		// robustness for long overflows
 		return (long) Math.min(size, Long.MAX_VALUE);
 	}
@@ -186,7 +195,7 @@ public class SparseBlockMCSR extends SparseBlock
 			int[] aix = indexes(i);
 			double[] avals = values(i);
 			for (int k = apos + 1; k < apos + alen; k++) {
-				if (aix[k-1] >= aix[k])
+				if (aix[k-1] >= aix[k] | aix[k-1] < 0 )
 					throw new RuntimeException("Wrong sparse row ordering, at row="+i+", pos="+k
 						+ " with column indexes " + aix[k-1] + ">=" + aix[k]);
 				if (avals[k] == 0)
@@ -196,10 +205,12 @@ public class SparseBlockMCSR extends SparseBlock
 		}
 
 		//3. A capacity that is no larger than nnz times resize factor
-		for( int i=0; i<rlen; i++ )
-			if( !isEmpty(i) && values(i).length > nnz*RESIZE_FACTOR1 )
+		for( int i=0; i<rlen; i++ ) {
+			long max_size = (long)Math.max(nnz*RESIZE_FACTOR1, INIT_CAPACITY);
+			if( !isEmpty(i) && values(i).length > max_size )
 				throw new RuntimeException("The capacity is larger than nnz times a resize factor(=2). "
-					+ "Actual length = " + values(i).length+", should not exceed "+nnz*RESIZE_FACTOR1);
+					+ "Actual length = " + values(i).length+", should not exceed "+max_size);
+		}
 
 		return true;
 	}
@@ -409,6 +420,8 @@ public class SparseBlockMCSR extends SparseBlock
 		sb.append(size());
 		sb.append("\n");
 		for( int i=0; i<numRows(); i++ ) {
+			if(isEmpty(i))
+				continue;
 			sb.append("row +");
 			sb.append(i);
 			sb.append(": ");

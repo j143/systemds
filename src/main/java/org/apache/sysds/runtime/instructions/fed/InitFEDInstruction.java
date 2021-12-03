@@ -27,8 +27,6 @@ import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -49,6 +47,7 @@ import org.apache.sysds.runtime.controlprogram.federated.FederatedRange;
 import org.apache.sysds.runtime.controlprogram.federated.FederatedResponse;
 import org.apache.sysds.runtime.controlprogram.federated.FederationMap;
 import org.apache.sysds.runtime.controlprogram.federated.FederationMap.FType;
+import org.apache.sysds.runtime.controlprogram.federated.FederatedStatistics;
 import org.apache.sysds.runtime.controlprogram.federated.FederationUtils;
 import org.apache.sysds.runtime.instructions.InstructionUtils;
 import org.apache.sysds.runtime.instructions.cp.CPOperand;
@@ -56,8 +55,11 @@ import org.apache.sysds.runtime.instructions.cp.Data;
 import org.apache.sysds.runtime.instructions.cp.ListObject;
 import org.apache.sysds.runtime.instructions.cp.ScalarObject;
 import org.apache.sysds.runtime.instructions.cp.StringObject;
+import org.apache.sysds.runtime.lineage.LineageItem;
+import org.apache.sysds.runtime.lineage.LineageTraceable;
+import org.apache.sysds.runtime.meta.DataCharacteristics;
 
-public class InitFEDInstruction extends FEDInstruction {
+public class InitFEDInstruction extends FEDInstruction implements LineageTraceable {
 
 	private static final Log LOG = LogFactory.getLog(InitFEDInstruction.class.getName());
 
@@ -119,6 +121,10 @@ public class InitFEDInstruction extends FEDInstruction {
 				String host = parsedValues[0];
 				int port = Integer.parseInt(parsedValues[1]);
 				String filePath = parsedValues[2];
+
+				// register the federated worker for federated statistics creation
+				FederatedStatistics.registerFedWorker(host, port);
+
 				// get beginning and end of data ranges
 				List<Data> rangesData = ranges.getData();
 				Data beginData = rangesData.get(i * 2);
@@ -211,15 +217,14 @@ public class InitFEDInstruction extends FEDInstruction {
 
 	public static void federateMatrix(CacheableData<?> output, List<Pair<FederatedRange, FederatedData>> workers) {
 
-		Map<FederatedRange, FederatedData> fedMapping = new TreeMap<>();
-		for(Pair<FederatedRange, FederatedData> t : workers) {
-			fedMapping.put(t.getLeft(), t.getRight());
-		}
+		List<Pair<FederatedRange, FederatedData>> fedMapping = new ArrayList<>();
+		for(Pair<FederatedRange, FederatedData> e : workers)
+			fedMapping.add(e);
 		List<Pair<FederatedData, Future<FederatedResponse>>> idResponses = new ArrayList<>();
 		long id = FederationUtils.getNextFedDataID();
 		boolean rowPartitioned = true;
 		boolean colPartitioned = true;
-		for(Map.Entry<FederatedRange, FederatedData> entry : fedMapping.entrySet()) {
+		for(Pair<FederatedRange, FederatedData> entry : fedMapping) {
 			FederatedRange range = entry.getKey();
 			FederatedData value = entry.getValue();
 			if(!value.isInitialized()) {
@@ -236,9 +241,16 @@ public class InitFEDInstruction extends FEDInstruction {
 		try {
 			int timeout = ConfigurationManager.getDMLConfig()
 				.getIntValue(DMLConfig.DEFAULT_FEDERATED_INITIALIZATION_TIMEOUT);
-			LOG.debug("Federated Initialization with timeout: " + timeout);
-			for(Pair<FederatedData, Future<FederatedResponse>> idResponse : idResponses)
-				idResponse.getRight().get(timeout, TimeUnit.SECONDS); // wait for initialization
+			if( LOG.isDebugEnabled() )
+				LOG.debug("Federated Initialization with timeout: " + timeout);
+			for(Pair<FederatedData, Future<FederatedResponse>> idResponse : idResponses) {
+				// wait for initialization and check dimensions
+				FederatedResponse re = idResponse.getRight().get(timeout, TimeUnit.SECONDS);
+				DataCharacteristics dc = (DataCharacteristics) re.getData()[1];
+				if( dc.getRows() > output.getNumRows() || dc.getCols() > output.getNumColumns() )
+					throw new DMLRuntimeException("Invalid federated meta data: "
+						+ output.getDataCharacteristics()+" vs federated response: "+dc);
+			}
 		}
 		catch(TimeoutException e) {
 			throw new DMLRuntimeException("Federated Initialization timeout exceeded", e);
@@ -258,10 +270,9 @@ public class InitFEDInstruction extends FEDInstruction {
 	}
 
 	public static void federateFrame(FrameObject output, List<Pair<FederatedRange, FederatedData>> workers) {
-		Map<FederatedRange, FederatedData> fedMapping = new TreeMap<>();
-		for(Pair<FederatedRange, FederatedData> t : workers) {
-			fedMapping.put(t.getLeft(), t.getRight());
-		}
+		List<Pair<FederatedRange, FederatedData>> fedMapping = new ArrayList<>();
+		for(Pair<FederatedRange, FederatedData> e : workers)
+			fedMapping.add(e);
 		// we want to wait for the futures with the response containing varIDs and the schemas of the frames
 		// on the distributed workers. We need the FederatedData, the starting column of the sub frame (for the schema)
 		// and the future for the response
@@ -269,7 +280,7 @@ public class InitFEDInstruction extends FEDInstruction {
 		long id = FederationUtils.getNextFedDataID();
 		boolean rowPartitioned = true;
 		boolean colPartitioned = true;
-		for(Map.Entry<FederatedRange, FederatedData> entry : fedMapping.entrySet()) {
+		for(Pair<FederatedRange, FederatedData> entry : fedMapping) {
 			FederatedRange range = entry.getKey();
 			FederatedData value = entry.getValue();
 			if(!value.isInitialized()) {
@@ -294,6 +305,10 @@ public class InitFEDInstruction extends FEDInstruction {
 				FederatedResponse response = idResponse.getRight().getRight().get();
 				int startCol = idResponse.getRight().getLeft();
 				handleFedFrameResponse(schema, fedData, response, startCol);
+				DataCharacteristics dc = (DataCharacteristics) response.getData()[2];
+				if( dc.getRows() > output.getNumRows() || dc.getCols() > output.getNumColumns() )
+					throw new DMLRuntimeException("Invalid federated meta data: "
+						+ output.getDataCharacteristics()+" vs federated response: "+dc);
 			}
 		}
 		catch(Exception e) {
@@ -315,7 +330,7 @@ public class InitFEDInstruction extends FEDInstruction {
 			// Index 0 is the varID, Index 1 is the schema of the frame
 			Object[] data = response.getData();
 			federatedData.setVarID((Long) data[0]);
-			// copy the
+			// copy the schema
 			Types.ValueType[] range_schema = (Types.ValueType[]) data[1];
 			for(int i = 0; i < range_schema.length; i++) {
 				Types.ValueType vType = range_schema[i];
@@ -329,5 +344,35 @@ public class InitFEDInstruction extends FEDInstruction {
 		catch(Exception e) {
 			throw new DMLRuntimeException("Exception in frame response from federated worker.", e);
 		}
+	}
+
+	@Override
+	public Pair<String, LineageItem> getLineageItem(ExecutionContext ec) {
+		String type = ec.getScalarInput(_type).getStringValue();
+		ListObject addresses = ec.getListObject(_addresses.getName());
+		ListObject ranges = ec.getListObject(_ranges.getName());
+		LineageItem[] liInputs = new LineageItem[addresses.getLength()];
+
+		for(int i = 0; i < addresses.getLength(); i++) {
+			Data addressData = addresses.getData().get(i);
+			if(addressData instanceof StringObject) {
+				String address = ((StringObject)addressData).getStringValue();
+				// get beginning and end of data ranges
+				List<Data> rangesData = ranges.getData();
+				List<Data> beginDimsData = ((ListObject) rangesData.get(i*2)).getData();
+				List<Data> endDimsData = ((ListObject) rangesData.get(i*2+1)).getData();
+				String rl = ((ScalarObject)beginDimsData.get(0)).getStringValue();
+				String cl = ((ScalarObject)beginDimsData.get(1)).getStringValue();
+				String ru = ((ScalarObject)endDimsData.get(0)).getStringValue();
+				String cu = ((ScalarObject)endDimsData.get(1)).getStringValue();
+				// form a string with all the information and create a lineage item
+				String data = InstructionUtils.concatOperands(type, address, rl, cl, ru, cu);
+				liInputs[i] = new LineageItem(data);
+			}
+			else {
+				throw new DMLRuntimeException("federated instruction only takes strings as addresses");
+			}
+		}
+		return Pair.of(_output.getName(), new LineageItem(getOpcode(), liInputs));
 	}
 }

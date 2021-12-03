@@ -19,10 +19,7 @@
 
 package org.apache.sysds.runtime.data;
 
-import java.io.Serializable;
-
-public final class SparseRowScalar extends SparseRow implements Serializable 
-{
+public final class SparseRowScalar extends SparseRow{
 	private static final long serialVersionUID = 722193514969067477L;
 	
 	private int index;
@@ -104,5 +101,13 @@ public final class SparseRowScalar extends SparseRow implements Serializable
 	@Override
 	public void compact() {
 		index = (value!=0) ? index : -1;
+	}
+
+	public int getIndex(){
+		return index;
+	}
+
+	public double getValue(){
+		return value;
 	}
 }

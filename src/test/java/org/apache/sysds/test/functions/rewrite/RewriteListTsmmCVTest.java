@@ -25,7 +25,7 @@ import org.junit.Assert;
 import org.junit.Test;
 import org.apache.sysds.common.Types.ExecMode;
 import org.apache.sysds.hops.OptimizerUtils;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.lineage.LineageCacheConfig.ReuseCacheType;
 import org.apache.sysds.runtime.matrix.data.MatrixValue.CellIndex;
 import org.apache.sysds.test.AutomatedTestBase;
@@ -122,7 +122,7 @@ public class RewriteListTsmmCVTest extends AutomatedTestBase
 			
 			//compare matrices 
 			HashMap<CellIndex, Double> dmlfile = readDMLMatrixFromOutputDir("S");
-			Assert.assertEquals(new Double(cols*7), dmlfile.get(new CellIndex(1,1)));
+			Assert.assertEquals(Double.valueOf(cols*7), dmlfile.get(new CellIndex(1,1)));
 			
 			//check compiled instructions after rewrite
 			if( instType == ExecType.CP )

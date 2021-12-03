@@ -103,4 +103,32 @@ public class FunctionDictionary<T extends FunctionBlock> {
 		for( Entry<String,T> fe : _funs.entrySet() )
 			_funsOrig.put(fe.getKey(), (T)fe.getValue().cloneFunctionBlock());
 	}
+	
+	public void merge(FunctionDictionary<T> that) {
+		//merge optimized functions
+		for( Entry<String, T> e : that._funs.entrySet() )
+			if( !_funs.containsKey(e.getKey()) )
+				_funs.put(e.getKey(), e.getValue());
+		
+		//merge unoptimized functions
+		if( _funsOrig != null && that._funsOrig != null )
+			for( Entry<String, T> e : that._funsOrig.entrySet() )
+				if( !_funsOrig.containsKey(e.getKey()) )
+					_funsOrig.put(e.getKey(), e.getValue());
+	}
+	
+	@Override
+	public String toString() {
+		StringBuilder sb = new StringBuilder("Function Dictionary:");
+		sb.append("----------------------------------------\n");
+		int pos = 0;
+		for( Entry<String, T> e : _funs.entrySet() ) {
+			sb.append("-- [");
+			sb.append(pos++);
+			sb.append("]: ");
+			sb.append(e.getKey());
+			sb.append("\n");
+		}
+		return sb.toString();
+	}
 }

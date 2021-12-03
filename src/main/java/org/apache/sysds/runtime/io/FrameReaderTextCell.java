@@ -38,6 +38,7 @@ import org.apache.sysds.conf.ConfigurationManager;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.matrix.data.FrameBlock;
+import org.apache.sysds.runtime.transform.TfUtils;
 import org.apache.sysds.runtime.util.FastStringTokenizer;
 import org.apache.sysds.runtime.util.UtilFunctions;
 
@@ -89,7 +90,7 @@ public class FrameReaderTextCell extends FrameReader
 			ValueType[] schema, String[] names, long rlen, long clen)
 		throws IOException
 	{
-		if( fs.isDirectory(path) ) {
+		if( fs.getFileStatus(path).isDirectory() ) {
 			FileInputFormat.addInputPath(job, path);
 			TextInputFormat informat = new TextInputFormat();
 			informat.configure(job);
@@ -125,7 +126,7 @@ public class FrameReaderTextCell extends FrameReader
 				row = st.nextInt()-1;
 				col = st.nextInt()-1;
 				if( row == -3 )
-					dest.getColumnMetadata(col).setMvValue(st.nextToken());
+					dest.getColumnMetadata(col).setMvValue(TfUtils.desanitizeSpaces(st.nextToken()));
 				else if( row == -2 )
 					dest.getColumnMetadata(col).setNumDistinct(st.nextLong());
 				else
@@ -172,7 +173,7 @@ public class FrameReaderTextCell extends FrameReader
 				row = st.nextInt()-1;
 				col = st.nextInt()-1;
 				if( row == -3 )
-					dest.getColumnMetadata(col).setMvValue(st.nextToken());
+					dest.getColumnMetadata(col).setMvValue(TfUtils.desanitizeSpaces(st.nextToken()));
 				else if (row == -2)
 					dest.getColumnMetadata(col).setNumDistinct(st.nextLong());
 				else

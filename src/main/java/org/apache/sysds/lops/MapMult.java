@@ -21,8 +21,8 @@ package org.apache.sysds.lops;
 
 import org.apache.sysds.hops.AggBinaryOp.SparkAggType;
  
-import org.apache.sysds.lops.LopProperties.ExecType;
-
+import org.apache.sysds.common.Types.ExecType;
+import org.apache.sysds.runtime.instructions.InstructionUtils;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
 
@@ -89,40 +89,37 @@ public class MapMult extends Lop
 	}
 
 	@Override
+	public SparkAggType getAggType() {
+		return _aggtype;
+	}
+	
+	@Override
+	public Lop getBroadcastInput() {
+		if (getExecType() != ExecType.SPARK)
+			return null;
+		
+		return _cacheType.isRight() ? getInputs().get(1) : getInputs().get(0);
+		//Note: rdd and broadcast inputs can flip during runtime
+	}
+
+	@Override
 	public String toString() {
 		return "Operation = MapMM";
 	}
 	
 	@Override
-	public String getInstructions(String input1, String input2, String output)
-	{
-		StringBuilder sb = new StringBuilder();
+	public String getInstructions(String input1, String input2, String output) {
+		String ret = InstructionUtils.concatOperands(
+			getExecType().name(), OPCODE,
+			getInputs().get(0).prepInputOperand(input1),
+			getInputs().get(1).prepInputOperand(input2),
+			prepOutputOperand(output),
+			_cacheType.name(),
+			String.valueOf(_outputEmptyBlocks));
 		
-		sb.append(getExecType());
+		if( getExecType() == ExecType.SPARK )
+			ret = InstructionUtils.concatOperands(ret, _aggtype.name());
 		
-		sb.append(Lop.OPERAND_DELIMITOR);
-		sb.append(OPCODE);
-		
-		sb.append(Lop.OPERAND_DELIMITOR);
-		sb.append( getInputs().get(0).prepInputOperand(input1));
-		
-		sb.append(Lop.OPERAND_DELIMITOR);
-		sb.append( getInputs().get(1).prepInputOperand(input2));
-		
-		sb.append(Lop.OPERAND_DELIMITOR);
-		sb.append(prepOutputOperand(output));
-		
-		sb.append(Lop.OPERAND_DELIMITOR);
-		sb.append(_cacheType);
-		
-		sb.append(Lop.OPERAND_DELIMITOR);
-		sb.append(_outputEmptyBlocks);
-		
-		if( getExecType() == ExecType.SPARK ) {
-			sb.append(Lop.OPERAND_DELIMITOR);
-			sb.append(_aggtype.toString());
-		}
-		
-		return sb.toString();
+		return ret;
 	}
 }

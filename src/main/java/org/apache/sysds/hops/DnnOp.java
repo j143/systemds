@@ -31,7 +31,7 @@ import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.hops.rewrite.HopRewriteUtils;
 import org.apache.sysds.lops.DnnTransform;
 import org.apache.sysds.lops.Lop;
-import org.apache.sysds.lops.LopProperties.ExecType;
+import org.apache.sysds.common.Types.ExecType;
 import org.apache.sysds.runtime.DMLRuntimeException;
 import org.apache.sysds.runtime.instructions.gpu.context.GPUContextPool;
 import org.apache.sysds.runtime.matrix.data.DnnParameters;
@@ -155,7 +155,7 @@ public class DnnOp extends MultiThreadedHop {
 		
 		//add reblock/checkpoint lops if necessary
 		constructAndSetLopsDataFlowProperties();
-		
+
 		return getLops();
 	}
 	
@@ -562,7 +562,7 @@ public class DnnOp extends MultiThreadedHop {
 	}
 	
 	@Override
-	protected ExecType optFindExecType() {
+	protected ExecType optFindExecType(boolean transitive) {
 		
 		checkAndSetForcedPlatform();
 		
@@ -593,7 +593,6 @@ public class DnnOp extends MultiThreadedHop {
 	// Parameters recomputed in refreshSizeInformation and passed across many calls of getDim
 	private DnnParameters _cachedParams = new DnnParameters(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, _maxNumThreads);
 	
-	@SuppressWarnings("null")
 	// stride1, stride2, padding1, padding2  
 	// input_shape1, input_shape2, input_shape3, input_shape4, 
 	// filter_shape1, filter_shape2, filter_shape3, filter_shape4

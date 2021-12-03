@@ -171,6 +171,8 @@ public class LibMatrixAgg
 	 * Core incremental matrix aggregate (ak+) as used for uack+ and acrk+.
 	 * Embedded correction values.
 	 * 
+	 * DOES NOT EVALUATE SPARSITY SINCE IT IS USED IN INCREMENTAL AGGREGATION
+	 * 
 	 * @param in matrix block
 	 * @param aggVal aggregate operator
 	 * @param aop aggregate operator
@@ -180,9 +182,8 @@ public class LibMatrixAgg
 		if( in.getNumRows()!=aggVal.getNumRows() || in.getNumColumns()!=aggVal.getNumColumns() )
 			throw new DMLRuntimeException("Dimension mismatch on aggregate: "+in.getNumRows()+"x"+in.getNumColumns()+
 					" vs "+aggVal.getNumRows()+"x"+aggVal.getNumColumns());
-		
-		//Timing time = new Timing(true);
-		
+
+
 		//core aggregation
 		boolean lastRowCorr = (aop.correction == CorrectionLocationType.LASTROW);
 		boolean lastColCorr = (aop.correction == CorrectionLocationType.LASTCOLUMN);
@@ -194,9 +195,7 @@ public class LibMatrixAgg
 			aggregateBinaryMatrixLastColDenseGeneric(in, aggVal);
 		else //if( in.sparse && lastColCorr )
 			aggregateBinaryMatrixLastColSparseGeneric(in, aggVal);
-		
-		//System.out.println("agg ("+in.rlen+","+in.clen+","+in.getNonZeros()+","+in.sparse+"), ("+naggVal+","+saggVal+") -> " +
-		//                   "("+aggVal.getNonZeros()+","+aggVal.isInSparseFormat()+") in "+time.stop()+"ms.");
+
 	}
 
 	public static void aggregateUnaryMatrix(MatrixBlock in, MatrixBlock out, AggregateUnaryOperator uaop) {
@@ -231,6 +230,9 @@ public class LibMatrixAgg
 	public static void aggregateUnaryMatrix(MatrixBlock in, MatrixBlock out, AggregateUnaryOperator uaop, int k) {
 		//fall back to sequential version if necessary
 		if( !satisfiesMultiThreadingConstraints(in, out, uaop, k) ) {
+			if(uaop.aggOp.increOp.fn instanceof Builtin && (((((Builtin) uaop.aggOp.increOp.fn).getBuiltinCode() == BuiltinCode.MININDEX)
+				|| (((Builtin) uaop.aggOp.increOp.fn).getBuiltinCode() == BuiltinCode.MAXINDEX)) && uaop.aggOp.correction.getNumRemovedRowsColumns()==0))
+					out.clen = 2;
 			aggregateUnaryMatrix(in, out, uaop);
 			return;
 		}
@@ -271,7 +273,7 @@ public class LibMatrixAgg
 			pool.shutdown();
 			//aggregate partial results
 			if( !(uaop.indexFn instanceof ReduceCol) ) {
-				out.copy(((PartialAggTask)tasks.get(0)).getResult()); //for init
+				out.copy(((PartialAggTask)tasks.get(0)).getResult(), false); //for init
 				for( int i=1; i<tasks.size(); i++ )
 					aggregateFinalResult(uaop.aggOp, out, ((PartialAggTask)tasks.get(i)).getResult());
 			}
@@ -292,12 +294,14 @@ public class LibMatrixAgg
 	}
 	
 	public static MatrixBlock cumaggregateUnaryMatrix(MatrixBlock in, MatrixBlock out, UnaryOperator uop, double[] agg) {
-		//prepare meta data 
+		//Check this implementation, standard case for cumagg (single threaded)
+
+		//prepare meta data
 		AggType aggtype = getAggType(uop);
 		final int m = in.rlen;
 		final int m2 = out.rlen;
 		final int n2 = out.clen;
-		
+
 		//filter empty input blocks (incl special handling for sparse-unsafe operations)
 		if( in.isEmpty() && (agg == null || aggtype == AggType.CUM_SUM_PROD) ) {
 			return aggregateUnaryMatrixEmpty(in, out, aggtype, null);
@@ -315,7 +319,7 @@ public class LibMatrixAgg
 		}
 		
 		//Timing time = new Timing(true);
-		
+
 		if( !in.sparse )
 			cumaggregateUnaryMatrixDense(in, out, aggtype, uop.fn, agg, 0, m);
 		else
@@ -334,7 +338,7 @@ public class LibMatrixAgg
 		AggregateUnaryOperator uaop = InstructionUtils.parseBasicCumulativeAggregateUnaryOperator(uop);
 		
 		//fall back to sequential if necessary or agg not supported
-		if(    k <= 1 || (long)in.rlen*in.clen < PAR_NUMCELL_THRESHOLD1 || in.rlen <= k
+		if( k <= 1 || (long)in.rlen*in.clen < PAR_NUMCELL_THRESHOLD1 || in.rlen <= k
 			|| out.clen*8*k > PAR_INTERMEDIATE_SIZE_THRESHOLD || uaop == null || !out.isThreadSafe()) {
 			return cumaggregateUnaryMatrix(in, out, uop);
 		}
@@ -465,7 +469,7 @@ public class LibMatrixAgg
 			List<Future<MatrixBlock>> rtasks = pool.invokeAll(tasks);	
 			pool.shutdown();
 			//aggregate partial results and error handling
-			ret.copy(rtasks.get(0).get()); //for init
+			ret.copy(rtasks.get(0).get(), false); //for init
 			for( int i=1; i<rtasks.size(); i++ )
 				aggregateFinalResult(op.aggOp, ret, rtasks.get(i).get());
 		}
@@ -1141,31 +1145,43 @@ public class LibMatrixAgg
 	}
 
 	private static void aggregateBinaryMatrixLastRowDenseGeneric(MatrixBlock in, MatrixBlock aggVal) {
-		if( in.denseBlock==null || in.isEmptyBlock(false) )
+		if( in.denseBlock==null || in.isEmptyBlock(false))
 			return;
 		
 		final int m = in.rlen;
+		if(m != 2)
+			throw new DMLRuntimeException("Invalid input for Aggregate Binary Matrix with correction in last row");
 		final int n = in.clen;
-		final int cix = (m-1)*n;
 		
 		double[] a = in.getDenseBlockValues();
+
+		if(aggVal.isEmpty()) {
+			aggVal.allocateDenseBlock();
+		}
+		else if(aggVal.isInSparseFormat()){
+			// If for some reason the agg Val is sparse then force it to dence,
+			// since the values that are going to be added
+			// will make it dense anyway.
+			aggVal.sparseToDense();
+			if(aggVal.denseBlock == null)
+				aggVal.allocateDenseBlock();
+		}
 		
+		double[] t = aggVal.getDenseBlockValues();
 		KahanObject buffer = new KahanObject(0, 0);
 		KahanPlus akplus = KahanPlus.getKahanPlusFnObject();
 		
-		//incl implicit nnz maintenance
-		for(int i=0, ix=0; i<m-1; i++)
-			for(int j=0; j<n; j++, ix++)
-			{
-				buffer._sum = aggVal.quickGetValue(i, j);
-				buffer._correction = aggVal.quickGetValue(m-1, j);
-				akplus.execute(buffer, a[ix], a[cix+j]);
-				aggVal.quickSetValue(i, j, buffer._sum);
-				aggVal.quickSetValue(m-1, j, buffer._correction);
-			}
+		// j is the pointer to column.
+		// c is the pointer to correction. 
+		for(int j=0, c = n; j<n; j++, c++){
+			buffer._sum = t[j];
+			buffer._correction = t[c];
+			akplus.execute(buffer, a[j], a[c]);
+			t[j] =  buffer._sum;
+			t[c] = buffer._correction;
+		}
 		
-		//note: nnz of aggVal maintained internally 
-		aggVal.examSparsity();
+		aggVal.recomputeNonZeros();
 	}
 
 	private static void aggregateBinaryMatrixLastRowSparseGeneric(MatrixBlock in, MatrixBlock aggVal) {
@@ -1181,30 +1197,28 @@ public class LibMatrixAgg
 		final int m = in.rlen;
 		final int rlen = Math.min(a.numRows(), m);
 		
-		for( int i=0; i<rlen-1; i++ )
-		{
-			if( !a.isEmpty(i) )
-			{
-				int apos = a.pos(i);
-				int alen = a.size(i);
-				int[] aix = a.indexes(i);
-				double[] avals = a.values(i);
-				
-				for( int j=apos; j<apos+alen; j++ )
-				{
-					int jix = aix[j];
-					double corr = in.quickGetValue(m-1, jix);
-					buffer1._sum        = aggVal.quickGetValue(i, jix);
-					buffer1._correction = aggVal.quickGetValue(m-1, jix);
-					akplus.execute(buffer1, avals[j], corr);
-					aggVal.quickSetValue(i, jix, buffer1._sum);
-					aggVal.quickSetValue(m-1, jix, buffer1._correction);
-				}
+		if(aggVal.isEmpty())
+			aggVal.allocateSparseRowsBlock();
+		
+		// add to aggVal with implicit nnz maintenance
+		for( int i=0; i<rlen-1; i++ ) {
+			if( a.isEmpty(i) )
+				continue;
+			int apos = a.pos(i);
+			int alen = a.size(i);
+			int[] aix = a.indexes(i);
+			double[] avals = a.values(i);
+			
+			for( int j=apos; j<apos+alen; j++ ) {
+				int jix = aix[j];
+				double corr = in.quickGetValue(m-1, jix);
+				buffer1._sum        = aggVal.quickGetValue(i, jix);
+				buffer1._correction = aggVal.quickGetValue(m-1, jix);
+				akplus.execute(buffer1, avals[j], corr);
+				aggVal.quickSetValue(i, jix, buffer1._sum);
+				aggVal.quickSetValue(m-1, jix, buffer1._correction);
 			}
 		}
-		
-		//note: nnz of aggVal/aggCorr maintained internally 
-		aggVal.examSparsity(); 
 	}
 
 	private static void aggregateBinaryMatrixLastColDenseGeneric(MatrixBlock in, MatrixBlock aggVal) {
@@ -1229,9 +1243,7 @@ public class LibMatrixAgg
 				aggVal.quickSetValue(i, j, buffer._sum);
 				aggVal.quickSetValue(i, n-1, buffer._correction);
 			}
-		
-		//note: nnz of aggVal maintained internally 
-		aggVal.examSparsity();
+
 	}
 
 	private static void aggregateBinaryMatrixLastColSparseGeneric(MatrixBlock in, MatrixBlock aggVal) {
@@ -1269,9 +1281,6 @@ public class LibMatrixAgg
 				}
 			}
 		}
-		
-		//note: nnz of aggVal/aggCorr maintained internally 
-		aggVal.examSparsity(); 
 	}
 
 	private static void aggregateUnaryMatrixDense(MatrixBlock in, MatrixBlock out, AggType optype, ValueFunction vFn, IndexFunction ixFn, int rl, int ru) {
@@ -1536,6 +1545,12 @@ public class LibMatrixAgg
 				s_ucumkp(a, agg, dc, m, n, kbuff, kplus, rl, ru);
 				break;
 			}
+			case CUM_SUM_PROD: { //CUMSUMPROD
+				if( n != 2 )
+					throw new DMLRuntimeException("Cumsumprod expects two-column input (n="+n+").");
+				s_ucumkpp(a, agg, dc, rl, ru);
+				break;
+			}
 			case CUM_PROD: { //CUMPROD
 				s_ucumm(a, agg, c, n, rl, ru);
 				break;
@@ -1556,6 +1571,7 @@ public class LibMatrixAgg
 		if( ixFn instanceof ReduceAll && (in.getNumRows() == 0 || in.getNumColumns() == 0) ) {
 			double val = Double.NaN;
 			switch( optype ) {
+				case PROD:         val = 1; break;
 				case KAHAN_SUM:
 				case KAHAN_SUM_SQ: val = 0; break;
 				case MIN:          val = Double.POSITIVE_INFINITY; break;
@@ -1620,7 +1636,9 @@ public class LibMatrixAgg
 						out.quickSetValue(2, j, in.rlen); //count
 				break;
 			}
-
+			case CUM_SUM_PROD:{
+				break;
+			}
 			default:
 				throw new DMLRuntimeException("Unsupported aggregation type: "+optype);
 		}
@@ -2352,6 +2370,33 @@ public class LibMatrixAgg
 		}
 	}
 	
+	
+	/**
+	 * CUMSUMPROD, opcode: ucumk+*, dense input.
+	 * 
+	 * @param a sparse block
+	 * @param agg ?
+	 * @param c ?
+	 * @param rl row lower index
+	 * @param ru row upper index
+	 */
+	private static void s_ucumkpp( SparseBlock a, double[] agg, DenseBlock c, int rl, int ru ) {
+		//init current row sum/correction arrays w/ neutral 0
+		double sum = (agg != null) ? agg[0] : 0;
+		//scan once and compute prefix sums
+		double[] cvals = c.values(0);
+		for( int i=rl; i<ru; i++ ) {
+			if( a.isEmpty(i) )
+				sum = cvals[i] = 0;
+			else if( a.size(i) == 2 ) {
+				double[] avals = a.values(i); int apos = a.pos(i);
+				sum = cvals[i] = avals[apos] + avals[apos+1] * sum;
+			}
+			else //fallback
+				sum = cvals[i] = a.get(i,0) + a.get(i,1) * sum;
+		}
+	}
+	
 	/**
 	 * CUMPROD, opcode: ucum*, sparse input.
 	 * 
@@ -2890,6 +2935,9 @@ public class LibMatrixAgg
 				ret *= product(a.values(i), 0, alen);
 				ret *= (alen<n) ? 0 : 1;
 			}
+			else
+				ret *= (n==0) ? 1 : 0;
+			
 			//early abort (note: in case of NaNs this is an invalid optimization)
 			if( !NAN_AWARENESS && ret==0 ) break;
 		}
@@ -2913,6 +2961,8 @@ public class LibMatrixAgg
 				double tmp = product(a.values(i), 0, alen);
 				lc[i] = tmp * ((alen<n) ? 0 : 1);
 			}
+			else
+				lc[i] = (n==0) ? 1 : 0;
 		}
 	}
 	
@@ -2929,9 +2979,14 @@ public class LibMatrixAgg
 		double[] lc = c.set(1).valuesAt(0);
 		int[] cnt = new int[ n ]; 
 		for( int i=rl; i<ru; i++ ) {
-			if( a.isEmpty(i) ) continue;
-			countAgg(a.values(i), cnt, a.indexes(i), a.pos(i), a.size(i));
-			LibMatrixMult.vectMultiplyWrite(lc, a.values(i), lc, 0, a.pos(i), 0, a.size(i));
+			if( a.isEmpty(i) ){
+
+				countAgg(a.values(i), cnt, a.indexes(i), a.pos(i), a.size(i));
+				LibMatrixMult.vectMultiplyWrite(lc, a.values(i), lc, 0, a.pos(i), 0, a.size(i));
+			}
+			else if(n != 0)
+				for(int j = 0; j < n; j++)
+					lc[j] *= 0;
 		}
 		for( int j=0; j<n; j++ )
 			if( cnt[j] < ru-rl )

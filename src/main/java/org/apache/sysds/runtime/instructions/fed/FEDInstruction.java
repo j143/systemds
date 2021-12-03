@@ -25,55 +25,89 @@ import org.apache.sysds.runtime.matrix.operators.Operator;
 import org.apache.sysds.runtime.privacy.propagation.PrivacyPropagator;
 
 public abstract class FEDInstruction extends Instruction {
-	
+
 	public enum FEDType {
 		AggregateBinary,
 		AggregateUnary,
 		AggregateTernary,
 		Append,
 		Binary,
+		Cast,
+		Checkpoint,
+		CSVReblock,
+		Ctable,
+		CumulativeAggregate,
+		CumsumOffset,
 		Init,
 		MultiReturnParameterizedBuiltin,
-		ParameterizedBuiltin,
-		Tsmm,
 		MMChain,
-		Reorg,
+		MAPMM,
 		MatrixIndexing,
+		Ternary,
+		Tsmm,
+		ParameterizedBuiltin,
+		Quaternary,
 		QSort,
-		QPick
+		QPick,
+		Reblock,
+		Reorg,
+		Reshape,
+		SpoofFused,
+		Unary
 	}
 	
+	public enum FederatedOutput {
+		FOUT, // forced federated output 
+		LOUT, // forced local output (consolidated in CP)
+		NONE; // runtime heuristics
+		public boolean isForcedFederated() {
+			return this == FOUT;
+		}
+		public boolean isForcedLocal() {
+			return this == LOUT;
+		}
+		public boolean isForced(){
+			return this == FOUT || this == LOUT;
+		}
+	}
+
 	protected final FEDType _fedType;
 	protected long _tid = -1; //main
-	
+	protected FederatedOutput _fedOut = FederatedOutput.NONE;
+
 	protected FEDInstruction(FEDType type, String opcode, String istr) {
 		this(type, null, opcode, istr);
 	}
-	
+
 	protected FEDInstruction(FEDType type, Operator op, String opcode, String istr) {
+		this(type, op, opcode, istr, FederatedOutput.NONE);
+	}
+
+	protected FEDInstruction(FEDType type, Operator op, String opcode, String istr, FederatedOutput fedOut) {
 		super(op);
 		_fedType = type;
 		instString = istr;
 		instOpcode = opcode;
+		_fedOut = fedOut;
 	}
-	
+
 	@Override
 	public IType getType() {
 		return IType.FEDERATED;
 	}
-	
+
 	public FEDType getFEDInstructionType() {
 		return _fedType;
 	}
-	
+
 	public long getTID() {
 		return _tid;
 	}
-	
+
 	public void setTID(long tid) {
 		_tid = tid;
 	}
-	
+
 	@Override
 	public Instruction preprocessInstruction(ExecutionContext ec) {
 		Instruction tmp = super.preprocessInstruction(ec);

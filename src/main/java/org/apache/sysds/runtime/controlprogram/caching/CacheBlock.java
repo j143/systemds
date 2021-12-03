@@ -20,6 +20,7 @@
 package org.apache.sysds.runtime.controlprogram.caching;
 
 import org.apache.hadoop.io.Writable;
+import org.apache.sysds.runtime.meta.DataCharacteristics;
 
 
 /**
@@ -33,6 +34,8 @@ public interface CacheBlock extends Writable
 	public int getNumRows();
 
 	public int getNumColumns();
+	
+	public DataCharacteristics getDataCharacteristics();
 	
 	/**
 	 * Get the in-memory size in bytes of the cache block.
@@ -96,6 +99,21 @@ public interface CacheBlock extends Writable
 	public CacheBlock slice(int rl, int ru, int cl, int cu, CacheBlock block);
 	
 	/**
+	 * Slice a sub block out of the current block and write into the given output block.
+	 * This method returns the passed instance if not null.
+	 * 
+	 * @param rl row lower
+	 * @param ru row upper
+	 * @param cl column lower
+	 * @param cu column upper
+	 * @param deep enforce deep-copy
+	 * @param block cache block
+	 * @return sub-block of cache block
+	 */
+	public CacheBlock slice(int rl, int ru, int cl, int cu, boolean deep, CacheBlock block);
+	
+	
+	/**
 	 * Merge the given block into the current block. Both blocks needs to be of equal 
 	 * dimensions and contain disjoint non-zero cells.
 	 * 
@@ -103,4 +121,31 @@ public interface CacheBlock extends Writable
 	 * @param appendOnly ?
 	 */
 	public void merge(CacheBlock that, boolean appendOnly);
+
+	/**
+	 * Returns the double value at the passed row and column.
+	 * If the value is missing 0 is returned.
+	 * @param r row of the value
+	 * @param c column of the value
+	 * @return double value at the passed row and column
+	 */
+	double getDouble(int r, int c);
+
+	/**
+	 * Returns the double value at the passed row and column.
+	 * If the value is missing NaN is returned.
+	 * @param r row of the value
+	 * @param c column of the value
+	 * @return double value at the passed row and column
+	 */
+	double getDoubleNaN(int r, int c);
+
+	/**
+	 * Returns the string of the value at the passed row and column.
+	 * If the value is missing or NaN, null is returned.
+	 * @param r row of the value
+	 * @param c column of the value
+	 * @return string of the value at the passed row and column
+	 */
+	String getString(int r, int c);
 }

@@ -19,12 +19,10 @@
 
 package org.apache.sysds.runtime.functionobjects;
 
-import java.io.Serializable;
-
 import org.apache.sysds.runtime.functionobjects.TernaryValueFunction.ValueFunctionWithConstant;
 import org.apache.sysds.runtime.matrix.operators.BinaryOperator;
 
-public class MinusMultiply extends TernaryValueFunction implements ValueFunctionWithConstant, Serializable
+public class MinusMultiply extends TernaryValueFunction implements ValueFunctionWithConstant
 {
 	private static final long serialVersionUID = 2801982061205871665L;
 	
@@ -38,6 +36,10 @@ public class MinusMultiply extends TernaryValueFunction implements ValueFunction
 	
 	private MinusMultiply(double cnt) {
 		_cnt = cnt;
+	}
+	
+	public double getConstant() {
+		return _cnt;
 	}
 
 	public static MinusMultiply getFnObject() {

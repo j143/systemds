@@ -47,10 +47,10 @@ public class Builtin extends ValueFunction
 {
 	private static final long serialVersionUID = 3836744687789840574L;
 	
-	public enum BuiltinCode { SIN, COS, TAN, SINH, COSH, TANH, ASIN, ACOS, ATAN, LOG, LOG_NZ, MIN,
+	public enum BuiltinCode { AUTODIFF, SIN, COS, TAN, SINH, COSH, TANH, ASIN, ACOS, ATAN, LOG, LOG_NZ, MIN,
 		MAX, ABS, SIGN, SQRT, EXP, PLOGP, PRINT, PRINTF, NROW, NCOL, LENGTH, LINEAGE, ROUND, MAXINDEX, MININDEX,
 		STOP, CEIL, FLOOR, CUMSUM, CUMPROD, CUMMIN, CUMMAX, CUMSUMPROD, INVERSE, SPROP, SIGMOID, EVAL, LIST,
-		TYPEOF, DETECTSCHEMA, ISNA, ISNAN, ISINF, DROP_INVALID_TYPE, DROP_INVALID_LENGTH, MAP,
+		TYPEOF, DETECTSCHEMA, ISNA, ISNAN, ISINF, DROP_INVALID_TYPE, DROP_INVALID_LENGTH, VALUE_SWAP, MAP,
 		COUNT_DISTINCT, COUNT_DISTINCT_APPROX}
 
 
@@ -61,6 +61,7 @@ public class Builtin extends ValueFunction
 	static public HashMap<String, BuiltinCode> String2BuiltinCode;
 	static {
 		String2BuiltinCode = new HashMap<>();
+		String2BuiltinCode.put( "autoDiff"    , BuiltinCode.AUTODIFF);
 		String2BuiltinCode.put( "sin"    , BuiltinCode.SIN);
 		String2BuiltinCode.put( "cos"    , BuiltinCode.COS);
 		String2BuiltinCode.put( "tan"    , BuiltinCode.TAN);
@@ -108,6 +109,7 @@ public class Builtin extends ValueFunction
 		String2BuiltinCode.put( "dropInvalidType", BuiltinCode.DROP_INVALID_TYPE);
 		String2BuiltinCode.put( "dropInvalidLength", BuiltinCode.DROP_INVALID_LENGTH);
 		String2BuiltinCode.put( "_map", BuiltinCode.MAP);
+		String2BuiltinCode.put( "valueSwap", BuiltinCode.VALUE_SWAP);
 	}
 	
 	private Builtin(BuiltinCode bf) {
@@ -118,8 +120,11 @@ public class Builtin extends ValueFunction
 		return bFunc;
 	}
 	
-	public static boolean isBuiltinCode(ValueFunction fn, BuiltinCode code) {
-		return (fn instanceof Builtin && ((Builtin)fn).getBuiltinCode() == code);
+	public static boolean isBuiltinCode(ValueFunction fn, BuiltinCode... codes) {
+		for( BuiltinCode code : codes )
+			if (fn instanceof Builtin && ((Builtin)fn).getBuiltinCode() == code)
+				return true;
+		return false;
 	}
 
 	public static boolean isBuiltinFnObject(String str) {

@@ -21,6 +21,8 @@ package org.apache.sysds.hops.ipa;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
 import org.apache.sysds.common.Types.DataType;
 import org.apache.sysds.common.Types.ValueType;
 import org.apache.sysds.conf.ConfigurationManager;
@@ -52,9 +54,12 @@ import org.apache.sysds.runtime.instructions.cp.ScalarObjectFactory;
 import org.apache.sysds.runtime.meta.DataCharacteristics;
 import org.apache.sysds.runtime.meta.MatrixCharacteristics;
 import org.apache.sysds.runtime.meta.MetaDataFormat;
+import org.apache.sysds.utils.Explain;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -74,6 +79,7 @@ import java.util.Set;
  */
 public class InterProceduralAnalysis 
 {
+	private static final boolean LDEBUG = false; //internal local debug level
 	private static final Log LOG = LogFactory.getLog(InterProceduralAnalysis.class.getName());
 
 	//internal configuration parameters
@@ -101,6 +107,15 @@ public class InterProceduralAnalysis
 	
 	//set IPA passes to apply in order 
 	private final ArrayList<IPAPass> _passes;
+
+	static {
+		// for internal debugging only
+		if( LDEBUG ) {
+			Logger.getLogger("org.apache.sysds.hops.ipa")
+				.setLevel(Level.TRACE);
+		}
+	}
+
 	
 	/**
 	 * Creates a handle for performing inter-procedural analysis
@@ -112,12 +127,16 @@ public class InterProceduralAnalysis
 	 * @param dmlp The DML program to analyze
 	 */
 	public InterProceduralAnalysis(DMLProgram dmlp) {
-		//analyzes the function call graph 
+		//analyzes the function call graph
 		_prog = dmlp;
 		_sb = null;
 		_fgraph = new FunctionCallGraph(dmlp);
+		if( LOG.isDebugEnabled() ) {
+			LOG.debug("IPA: Initial FunctionCallGraph: \n--MAIN PROGRAM\n" + 
+				Explain.explainFunctionCallGraph(_fgraph, new HashSet<String>(), null, 1));
+		}
 		
-		//create order list of IPA passes
+		//create ordered list of IPA passes
 		_passes = new ArrayList<>();
 		_passes.add(new IPAPassRemoveUnusedFunctions());
 		_passes.add(new IPAPassFlagFunctionsRecompileOnce());
@@ -125,6 +144,7 @@ public class InterProceduralAnalysis
 		_passes.add(new IPAPassRemoveConstantBinaryOps());
 		_passes.add(new IPAPassPropagateReplaceLiterals());
 		_passes.add(new IPAPassInlineFunctions());
+		_passes.add(new IPAPassReplaceEvalFunctionCalls());
 		_passes.add(new IPAPassEliminateDeadCode());
 		_passes.add(new IPAPassFlagNonDeterminism());
 		//note: apply rewrites last because statement block rewrites
@@ -157,7 +177,6 @@ public class InterProceduralAnalysis
 	 * 
 	 * @param repetitions number of IPA rounds 
 	 */
-	@SuppressWarnings("null")
 	public void analyzeProgram(int repetitions) {
 		//sanity check for valid number of repetitions
 		if( repetitions <= 0 )
@@ -219,11 +238,16 @@ public class InterProceduralAnalysis
 				_fgraph = new FunctionCallGraph(_prog);
 		}
 		
-		//cleanup pass: remove unused functions
+		//cleanup passes: remove unused functions, CLA workload extraction
 		FunctionCallGraph graph2 = new FunctionCallGraph(_prog);
-		IPAPass rmFuns = new IPAPassRemoveUnusedFunctions();
-		if( rmFuns.isApplicable(graph2) )
-			rmFuns.rewriteProgram(_prog, graph2, null);
+		List<IPAPass> fpasses = Arrays.asList(
+			new IPAPassRemoveUnusedFunctions(),
+			new IPAPassCompressionWorkloadAnalysis(), // workload-aware compression
+			new IPAPassApplyStaticAndDynamicHopRewrites(),  //split after compress
+			new IPAPassRewriteFederatedPlan());
+		for(IPAPass pass : fpasses)
+			if( pass.isApplicable(graph2) )
+				pass.rewriteProgram(_prog, graph2, null);
 	}
 	
 	public Set<String> analyzeSubProgram() {
@@ -525,6 +549,9 @@ public class InterProceduralAnalysis
 		for( int i=0; i<Math.min(inputOps.size(), funArgNames.length); i++ ) {
 			//create mapping between input hops and vars
 			DataIdentifier dat = fstmt.getInputParam(funArgNames[i]);
+			if( dat == null )
+				throw new HopsException("Failed IPA: function argument '"+funArgNames[i]+"' "
+					+ "does not exist in function signature of "+fop.getFunctionKey()+".");
 			Hop input = inputOps.get(i);
 			
 			if( input.getDataType()==DataType.MATRIX )

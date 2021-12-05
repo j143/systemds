@@ -1,0 +1,22 @@
+name: gpu tests
+
+on:
+  push:
+    branches: 
+      - main-gpu
+  pull_request:
+    branches:
+      - main-gpu
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: gpu ubuntu instance
+    runs-on: [self-hosted, linux, x64, gpu]
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v2
+    
+    - name: print hello
+      run: printf "Hello GPU!"

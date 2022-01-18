@@ -26,3 +26,5 @@ updates:   # Maintain dependencies for GitHub Actions
     directory: "/"
     schedule:       
       interval: "daily"
+      # Check for actions updates at 3:40am UTC
+      time: "03:40"

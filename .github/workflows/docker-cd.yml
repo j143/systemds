@@ -25,6 +25,15 @@ on:
   schedule:
     - cron: '30 1 * * 3' # Wednesday at 1:30 AM UTC
   workflow_dispatch:
+    inputs:
+      branch_or_tag:
+        description: 'Version (branch/tag) of SystemDS to build from. For example, 3.1.0-rc2'
+        required: true
+        default: 'main'
+      version:
+        description: 'Version tag for the docker'
+        required: true
+        default: ''
   
 jobs:
   build-nightly:

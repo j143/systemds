@@ -35,7 +35,7 @@ on:
   
 jobs:
   build-release:
-    if: github.repository == 'apache/systemds'
+    # if: github.repository == 'apache/systemds'
     runs-on: ubuntu-latest
 
     steps:

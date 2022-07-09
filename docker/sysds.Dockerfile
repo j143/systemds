@@ -34,6 +34,9 @@ ENV SYSTEMDS_ROOT=/usr/src/systemds
 ENV PATH $SYSTEMDS_ROOT/bin:$PATH
 ENV SYSDS_QUIET=1
 
+ENV SYSTEMDS_RELEASE_VERSION 3.0.0
+ENV SYSTEMDS_RELEASE_COMMIT main
+
 RUN apt-get update -qq \
 	&& apt-get upgrade -y \
 	&& apt-get install -y --no-install-recommends \
@@ -50,6 +53,7 @@ RUN apt-get update -qq \
 	&& mv apache-maven-$MAVEN_VERSION /usr/lib/mvn \
 	&& git clone --depth 1 https://github.com/apache/systemds.git systemds && \
 	cd /usr/src/systemds/ && \
+	git checkout $SYSTEMDS_RELEASE_COMMIT && \
 	mvn --no-transfer-progress clean package -P distribution && \
 	rm -r .git && \
 	rm -r .github && \

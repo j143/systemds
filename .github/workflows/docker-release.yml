@@ -41,9 +41,6 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
-    - run: git checkout ${{ github.event.inputs.branch_or_tag }}
 
     # https://github.com/docker/metadata-action
     - name: Configure Docker metadata

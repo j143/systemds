@@ -62,3 +62,6 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-maven-test-
 
+    - name: Run custom java command
+      run: java -cp 'target/SystemDS.jar;target/lib/*' org.apache.sysds.api.DMLScript -s 'print(\"Hello\")'
+      

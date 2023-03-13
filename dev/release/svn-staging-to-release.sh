@@ -81,7 +81,8 @@ else
   printf "This step would commit to the SVN release repo\n"
   printf "At $RELEASE_LOCATION \n"
   printf "\n==========\n"
-  printf "You might want to manually check the files and run the following:\n"
+  printf "\nYou might want to manually check the files and run the following:\n"
+  printf "cd into svn-release-systemds folder, and check the svn log\n"
   printf "svn ci --username $ASF_USERNAME -m'Apache SystemDS $RELEASE_VERSION Released' --no-auth-cache \n"
   printf "\n==========\n"
 fi

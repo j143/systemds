@@ -130,3 +130,17 @@ jobs:
         export PATH=$SYSTEMDS_ROOT/bin:$PATH
         cd src/main/python
         ./tests/federated/runFedTest.sh
+    
+    - name: Run tests with coverage
+      run: |
+        coverage run -m unittest discover -s tests -p 'test_*.py'
+        coverage xml
+    
+    - name: Save coverage report as artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: coverage
+        path: coverage.xml
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v2

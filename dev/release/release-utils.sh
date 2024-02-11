@@ -25,8 +25,8 @@
 ##  Desc:  Helper utilities for the release workflow
 ################################################################################
 
-ASF_REPO="https://github.com/apache/systemds"
-ASF_REPO_CONTENT="https://raw.githubusercontent.com/apache/systemds"
+ASF_REPO="https://github.com/j143/systemds"
+ASF_REPO_CONTENT="https://raw.githubusercontent.com/j143/systemds"
 
 
 # https://github.com/j143/systemds/issues/75

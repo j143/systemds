@@ -45,22 +45,21 @@ import java.util.concurrent.ExecutorService;
 public class TransposeSelfMMOOCInstruction extends ComputationOOCInstruction {
 
 
-	protected TransposeSelfMMOOCInstruction(OOCType type, Operator op, CPOperand in1, CPOperand in2, CPOperand out, String opcode, String istr) {
-		super(type, op, in1, in2, out, opcode, istr);
+	protected TransposeSelfMMOOCInstruction(OOCType type, Operator op, CPOperand in1, CPOperand out, String opcode, String istr) {
+		super(type, op, in1, out, opcode, istr);
 	}
 
 	public static TransposeSelfMMOOCInstruction parseInstruction(String str) {
 		String[] parts = InstructionUtils.getInstructionPartsWithValueType(str);
-		InstructionUtils.checkNumFields(parts, 4);
+		InstructionUtils.checkNumFields(parts, 3);
 		String opcode = parts[0];
 		CPOperand in1 = new CPOperand(parts[1]); // the larget matrix (streamed)
-		CPOperand in2 = new CPOperand(parts[2]); // the small vector (in-memory)
-		CPOperand out = new CPOperand(parts[3]);
+		CPOperand out = new CPOperand(parts[2]);
 
 		AggregateOperator agg = new AggregateOperator(0, Plus.getPlusFnObject());
 		AggregateBinaryOperator ba = new AggregateBinaryOperator(Multiply.getMultiplyFnObject(), agg);
 
-		return new TransposeSelfMMOOCInstruction(OOCType.MAPMM, ba, in1, in2, out, opcode, str);
+		return new TransposeSelfMMOOCInstruction(OOCType.Reorg, ba, in1, out, opcode, str);
 	}
 
 	@Override

@@ -51,7 +51,7 @@ public class TransposeSelfMMOOCInstruction extends ComputationOOCInstruction {
 
 	public static TransposeSelfMMOOCInstruction parseInstruction(String str) {
 		String[] parts = InstructionUtils.getInstructionPartsWithValueType(str);
-		InstructionUtils.checkNumFields(parts, 3);
+		InstructionUtils.checkNumFields(parts, 2);
 		String opcode = parts[0];
 		CPOperand in1 = new CPOperand(parts[1]); // the larget matrix (streamed)
 		CPOperand out = new CPOperand(parts[2]);

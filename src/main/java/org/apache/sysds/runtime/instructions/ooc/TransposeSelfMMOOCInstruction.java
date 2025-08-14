@@ -71,25 +71,10 @@ public class TransposeSelfMMOOCInstruction extends ComputationOOCInstruction {
 	@Override
 	public void processInstruction( ExecutionContext ec ) {
 		// 1. Identify the inputs
-		MatrixObject min = ec.getMatrixObject(input1); // big matrix
-		MatrixBlock vin = ec.getMatrixObject(input2)
-			.acquireReadAndRelease(); // in-memory vector
-
-		// 2. Pre-partition the in-memory vector into a hashmap
-		HashMap<Long, MatrixBlock> partitionedVector = new HashMap<>();
-		int blksize = vin.getDataCharacteristics().getBlocksize();
-		if (blksize < 0)
-			blksize = ConfigurationManager.getBlocksize();
-		for (int i=0; i<vin.getNumRows(); i+=blksize) {
-			long key = (long) (i/blksize) + 1; // the key starts at 1
-			int end_row = Math.min(i + blksize, vin.getNumRows());
-			MatrixBlock vectorSlice = vin.slice(i, end_row - 1);
-			partitionedVector.put(key, vectorSlice);
-		}
+		MatrixObject min = ec.getMatrixObject(input1);
 
 		LocalTaskQueue<IndexedMatrixValue> qIn = min.getStreamHandle();
 		LocalTaskQueue<IndexedMatrixValue> qOut = new LocalTaskQueue<>();
-		BinaryOperator plus = InstructionUtils.parseBinaryOperator(Opcodes.PLUS.toString());
 		ec.getMatrixObject(output).setStreamHandle(qOut);
 
 		ExecutorService pool = CommonThreadPool.get();
@@ -98,36 +83,11 @@ public class TransposeSelfMMOOCInstruction extends ComputationOOCInstruction {
 			pool.submit(() -> {
 				IndexedMatrixValue tmp = null;
 				try {
-					HashMap<Long, MatrixBlock> partialResults = new  HashMap<>();
-					while((tmp = qIn.dequeueTask()) != LocalTaskQueue.NO_MORE_TASKS) {
+					HashMap<Long, MatrixBlock> partialResults = new HashMap<>();
+					while ((tmp = qIn.dequeueTask()) != LocalTaskQueue.NO_MORE_TASKS) {
 						MatrixBlock matrixBlock = (MatrixBlock) tmp.getValue();
 						long rowIndex = tmp.getIndexes().getRowIndex();
 						long colIndex = tmp.getIndexes().getColumnIndex();
-						MatrixBlock vectorSlice = partitionedVector.get(colIndex);
-
-						// Now, call the operation with the correct, specific operator.
-						MatrixBlock partialResult = matrixBlock.aggregateBinaryOperations(
-							matrixBlock, vectorSlice, new MatrixBlock(), (AggregateBinaryOperator) _optr);
-
-						// for single column block, no aggregation neeeded
-						if( min.getNumColumns() <= min.getBlocksize() ) {
-							qOut.enqueueTask(new IndexedMatrixValue(tmp.getIndexes(), partialResult));
-						}
-						else {
-							MatrixBlock currAgg = partialResults.get(rowIndex);
-							if (currAgg == null)
-								partialResults.put(rowIndex, partialResult);
-							else
-								currAgg.binaryOperationsInPlace(plus, partialResult);
-						}
-					}
-					
-					// emit aggregated blocks
-					if( min.getNumColumns() > min.getBlocksize() ) {
-						for (Map.Entry<Long, MatrixBlock> entry : partialResults.entrySet()) {
-							MatrixIndexes outIndexes = new MatrixIndexes(entry.getKey(), 1L);
-							qOut.enqueueTask(new IndexedMatrixValue(outIndexes, entry.getValue()));
-						}
 					}
 				}
 				catch(Exception ex) {

@@ -19,7 +19,9 @@
 
 package org.apache.sysds.test.functions.ooc;
 
+import org.apache.sysds.common.Opcodes;
 import org.apache.sysds.common.Types;
+import org.apache.sysds.runtime.instructions.Instruction;
 import org.apache.sysds.runtime.io.MatrixWriter;
 import org.apache.sysds.runtime.io.MatrixWriterFactory;
 import org.apache.sysds.runtime.matrix.data.MatrixBlock;
@@ -96,15 +98,23 @@ public class TransposeSelfMMTest extends AutomatedTestBase {
 			runTest(true, exceptionExpected, null, -1);
 
 			double[][] C1 = readMatrix(output(OUTPUT_NAME), Types.FileFormat.BINARY, rows, cols, 1000, 1000);
-//			double result = 0.0;
-//			for(int i = 0; i < rows; i++) { // verify the results with Java
-//				double expected = 0.0;
-//				for(int j = 0; j < cols; j++) {
-//					expected += A_mb.get(i, j) * x_mb.get(j,0);
-//				}
-//				result = C1[i][0];
-//				Assert.assertEquals(expected, result, eps);
-//			}
+			double result = 0.0;
+			for(int i = 0; i < cols; i++) { // verify the results with Java
+				double expected = 0.0;
+				for(int j = 0; j < cols; j++) {
+					for (int k = 0; k < rows; k++) {
+						expected += A_mb.get(k, i) * A_mb.get(k, j);
+					}
+					result = C1[i][j];
+					Assert.assertEquals(expected, result, eps);
+				}
+			}
+
+			String prefix = Instruction.OOC_INST_PREFIX;
+			Assert.assertTrue("OOC wasn't used for RBLK",
+					heavyHittersContainsString(prefix + Opcodes.RBLK));
+			Assert.assertTrue("OOC wasn't used for TSMM",
+					heavyHittersContainsString(prefix + Opcodes.TSMM));
 		}
 		catch (IOException e) {
 			throw new RuntimeException(e);

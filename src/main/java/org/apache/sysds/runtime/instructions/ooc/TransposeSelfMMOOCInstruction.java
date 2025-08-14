@@ -72,10 +72,14 @@ public class TransposeSelfMMOOCInstruction extends ComputationOOCInstruction {
 	public void processInstruction( ExecutionContext ec ) {
 		// 1. Identify the inputs
 		MatrixObject min = ec.getMatrixObject(input1);
+		long cols = min.getNumColumns();
 
 		LocalTaskQueue<IndexedMatrixValue> qIn = min.getStreamHandle();
 		LocalTaskQueue<IndexedMatrixValue> qOut = new LocalTaskQueue<>();
+		BinaryOperator plus = InstructionUtils.parseBinaryOperator(Opcodes.PLUS.toString());
 		ec.getMatrixObject(output).setStreamHandle(qOut);
+
+		MatrixBlock result = new MatrixBlock((int)cols, (int)cols, false);
 
 		ExecutorService pool = CommonThreadPool.get();
 		try {
@@ -86,8 +90,12 @@ public class TransposeSelfMMOOCInstruction extends ComputationOOCInstruction {
 					HashMap<Long, MatrixBlock> partialResults = new HashMap<>();
 					while ((tmp = qIn.dequeueTask()) != LocalTaskQueue.NO_MORE_TASKS) {
 						MatrixBlock matrixBlock = (MatrixBlock) tmp.getValue();
-						long rowIndex = tmp.getIndexes().getRowIndex();
-						long colIndex = tmp.getIndexes().getColumnIndex();
+//						long rowIndex = tmp.getIndexes().getRowIndex();
+//						long colIndex = tmp.getIndexes().getColumnIndex();
+
+						MatrixBlock partialResult = matrixBlock.transposeSelfMatrixMultOperations(new MatrixBlock(), _tstype);
+//						result.binaryOperationsInPlace(plus, partialResult);
+						qOut.enqueueTask(new IndexedMatrixValue(tmp.getIndexes(), partialResult));
 					}
 				}
 				catch(Exception ex) {

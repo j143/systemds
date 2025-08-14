@@ -95,7 +95,7 @@ public class TransposeSelfMMTest extends AutomatedTestBase {
 			boolean exceptionExpected = false;
 			runTest(true, exceptionExpected, null, -1);
 
-//			double[][] C1 = readMatrix(output(OUTPUT_NAME), Types.FileFormat.BINARY, rows, cols, 1000, 1000);
+			double[][] C1 = readMatrix(output(OUTPUT_NAME), Types.FileFormat.BINARY, rows, cols, 1000, 1000);
 //			double result = 0.0;
 //			for(int i = 0; i < rows; i++) { // verify the results with Java
 //				double expected = 0.0;

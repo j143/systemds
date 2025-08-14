@@ -75,62 +75,33 @@ public class TransposeSelfMMOOCInstruction extends ComputationOOCInstruction {
 		long cols = min.getNumColumns();
 
 		LocalTaskQueue<IndexedMatrixValue> qIn = min.getStreamHandle();
-		LocalTaskQueue<IndexedMatrixValue> qOut = new LocalTaskQueue<>();
 		BinaryOperator plus = InstructionUtils.parseBinaryOperator(Opcodes.PLUS.toString());
-		ec.getMatrixObject(output).setStreamHandle(qOut);
 
-//		MatrixBlock result = new MatrixBlock((int)cols, (int)cols, false);
+		// 1. create an empty accumulator for the result
+		MatrixBlock result = new MatrixBlock((int)cols, (int)cols, false);
 
-		ExecutorService pool = CommonThreadPool.get();
+		IndexedMatrixValue tmp = null;
 		try {
-			// Core logic: background thread
-			pool.submit(() -> {
-				IndexedMatrixValue tmp = null;
-				try {
-					HashMap<Long, MatrixBlock> partialResults = new HashMap<>();
-					while ((tmp = qIn.dequeueTask()) != LocalTaskQueue.NO_MORE_TASKS) {
-						MatrixBlock matrixBlock = (MatrixBlock) tmp.getValue();
-						long rowIndex = tmp.getIndexes().getRowIndex();
-//						long colIndex = tmp.getIndexes().getColumnIndex();
+			// 2. consume a stream of X blocks synchronously on main thread
+			while ((tmp = qIn.dequeueTask()) != LocalTaskQueue.NO_MORE_TASKS) {
+				MatrixBlock matrixBlock = (MatrixBlock) tmp.getValue();
 
-						MatrixBlock partialResult = matrixBlock.transposeSelfMatrixMultOperations(new MatrixBlock(), _tstype);
+				// 3. compute the local transpose self: t(block) %*% block
+				MatrixBlock partialResult = matrixBlock.transposeSelfMatrixMultOperations(new MatrixBlock(), _tstype);
 
+				// 4. aggregate the partial result into final accumulator block
+				result.binaryOperationsInPlace(plus, partialResult);
 
-						// for single column block
-						if ( min.getNumColumns() > min.getBlocksize() ) {
-							qOut.enqueueTask(new IndexedMatrixValue(tmp.getIndexes(), partialResult));
-						} else {
-							MatrixBlock currAgg = partialResults.get(rowIndex);
-							if (currAgg == null) {
-								partialResults.put(rowIndex, partialResult);
-							} else {
-								currAgg.binaryOperationsInPlace(plus, partialResult);
-							}
-
-						}
-
-						// emit aggregated blocks
-						if( min.getNumColumns() > min.getBlocksize() ) {
-							for (Map.Entry<Long, MatrixBlock> entry : partialResults.entrySet()) {
-								MatrixIndexes outIndexes = new MatrixIndexes(entry.getKey(), 1L);
-								qOut.enqueueTask(new IndexedMatrixValue(outIndexes, entry.getValue()));
-							}
-						}
-
-					}
-				}
-				catch(Exception ex) {
-					throw new DMLRuntimeException(ex);
-				}
-				finally {
-					qOut.closeInput();
-				}
-			});
-		} catch (Exception e) {
-			throw new DMLRuntimeException(e);
+			}
+			// 5. once the stream is exhausted, set the final, aggregated block as the output
+			ec.setMatrixOutput(output.getName(), result); // single in-memory matrix block
+		}
+		catch(Exception ex) {
+			throw new DMLRuntimeException(ex);
 		}
 		finally {
-			pool.shutdown();
+			ec.releaseMatrixInput(input1.getName());
 		}
+
 	}
 }

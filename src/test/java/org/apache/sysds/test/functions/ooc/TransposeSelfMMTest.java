@@ -100,13 +100,13 @@ public class TransposeSelfMMTest extends AutomatedTestBase {
 			double[][] C1 = readMatrix(output(OUTPUT_NAME), Types.FileFormat.BINARY, rows, cols, 1000, 1000);
 			double result = 0.0;
 			for(int i = 0; i < cols; i++) { // verify the results with Java
-				double expected = 0.0;
 				for(int j = 0; j < cols; j++) {
+					double expected = 0.0;
 					for (int k = 0; k < rows; k++) {
 						expected += A_mb.get(k, i) * A_mb.get(k, j);
 					}
 					result = C1[i][j];
-					Assert.assertEquals(expected, result, eps);
+					Assert.assertEquals( "value mismatch at cell ("+i+","+j+")",expected, result, eps);
 				}
 			}
 

@@ -79,7 +79,7 @@ public class TransposeSelfMMOOCInstruction extends ComputationOOCInstruction {
 		BinaryOperator plus = InstructionUtils.parseBinaryOperator(Opcodes.PLUS.toString());
 		ec.getMatrixObject(output).setStreamHandle(qOut);
 
-		MatrixBlock result = new MatrixBlock((int)cols, (int)cols, false);
+//		MatrixBlock result = new MatrixBlock((int)cols, (int)cols, false);
 
 		ExecutorService pool = CommonThreadPool.get();
 		try {
@@ -90,12 +90,33 @@ public class TransposeSelfMMOOCInstruction extends ComputationOOCInstruction {
 					HashMap<Long, MatrixBlock> partialResults = new HashMap<>();
 					while ((tmp = qIn.dequeueTask()) != LocalTaskQueue.NO_MORE_TASKS) {
 						MatrixBlock matrixBlock = (MatrixBlock) tmp.getValue();
-//						long rowIndex = tmp.getIndexes().getRowIndex();
+						long rowIndex = tmp.getIndexes().getRowIndex();
 //						long colIndex = tmp.getIndexes().getColumnIndex();
 
 						MatrixBlock partialResult = matrixBlock.transposeSelfMatrixMultOperations(new MatrixBlock(), _tstype);
-//						result.binaryOperationsInPlace(plus, partialResult);
-						qOut.enqueueTask(new IndexedMatrixValue(tmp.getIndexes(), partialResult));
+
+
+						// for single column block
+						if ( min.getNumColumns() > min.getBlocksize() ) {
+							qOut.enqueueTask(new IndexedMatrixValue(tmp.getIndexes(), partialResult));
+						} else {
+							MatrixBlock currAgg = partialResults.get(rowIndex);
+							if (currAgg == null) {
+								partialResults.put(rowIndex, partialResult);
+							} else {
+								currAgg.binaryOperationsInPlace(plus, partialResult);
+							}
+
+						}
+
+						// emit aggregated blocks
+						if( min.getNumColumns() > min.getBlocksize() ) {
+							for (Map.Entry<Long, MatrixBlock> entry : partialResults.entrySet()) {
+								MatrixIndexes outIndexes = new MatrixIndexes(entry.getKey(), 1L);
+								qOut.enqueueTask(new IndexedMatrixValue(outIndexes, entry.getValue()));
+							}
+						}
+
 					}
 				}
 				catch(Exception ex) {

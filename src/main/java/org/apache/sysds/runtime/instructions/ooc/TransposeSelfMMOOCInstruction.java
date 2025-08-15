@@ -100,7 +100,7 @@ public class TransposeSelfMMOOCInstruction extends ComputationOOCInstruction {
 			throw new DMLRuntimeException(ex);
 		}
 		finally {
-			ec.releaseMatrixInput(input1.getName());
+//			ec.releaseMatrixInput(input1.getName());
 		}
 
 	}

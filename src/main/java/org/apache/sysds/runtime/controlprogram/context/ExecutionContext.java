@@ -37,6 +37,9 @@ import org.apache.sysds.runtime.controlprogram.caching.FrameObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysds.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysds.runtime.controlprogram.caching.TensorObject;
+import org.apache.sysds.runtime.controlprogram.caching.prescientbuffer.IOTrace;
+import org.apache.sysds.runtime.controlprogram.caching.prescientbuffer.IOTraceGenerator;
+import org.apache.sysds.runtime.controlprogram.caching.UnifiedMemoryManager;
 import org.apache.sysds.runtime.controlprogram.federated.MatrixLineagePair;
 import org.apache.sysds.runtime.controlprogram.paramserv.homomorphicEncryption.SEALClient;
 import org.apache.sysds.runtime.data.TensorBlock;
@@ -92,6 +95,53 @@ public class ExecutionContext {
 
 	//parfor temporary functions (created by eval)
 	protected Set<String> _fnNames;
+
+	private IOTraceGenerator _ioTraceGenerator;
+	private long _logicalTime = 0;
+	private IOTrace _ioTrace;
+
+	public IOTraceGenerator getIOTraceGenerator() {
+		if (_ioTraceGenerator == null) {
+			_ioTraceGenerator = new IOTraceGenerator();
+		}
+		return _ioTraceGenerator;
+	}
+
+	public long get_logicalTime() {
+		return _logicalTime;
+	}
+
+	public void set_logicalTime(long _logicalTime) {
+		this._logicalTime = _logicalTime;
+	}
+
+	public IOTrace getIOTrace() {
+		if (_ioTrace == null) {
+			_ioTrace = new IOTrace();
+		}
+		return _ioTrace;
+	}
+
+	public void setIOTrace(IOTrace ioTrace) {
+		_ioTrace = ioTrace;
+	}
+
+	public void recordIOAccess(Instruction inst) {
+		if (!OptimizerUtils.isUMMEnabled() || _ioTrace == null) {
+			return;
+		}
+
+		// just increment time - the trace is already pre-built
+		// Use IOTraceGenerator's static method
+		List<String> blockIDs = IOTraceGenerator.extractBlockIDs(inst, this, _logicalTime);
+
+		for (String blockID : blockIDs) {
+			_ioTrace.recordAccess(blockID, _logicalTime);
+		}
+
+		_logicalTime++;
+		UnifiedMemoryManager.updateTime(_logicalTime);
+	}
 
 	/**
 	 * List of {@link GPUContext}s owned by this {@link ExecutionContext}

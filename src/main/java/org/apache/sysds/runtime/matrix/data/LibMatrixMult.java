@@ -4346,16 +4346,15 @@ public class LibMatrixMult
 	}
 	
 	public static void vectMultiplyInPlace( final double aval, double[] c, int ci, final int len ) {
-		final int bn = len%8;
-		//rest, not aligned to 8-blocks
+		final int bn = len%vLen;
+		//rest, not aligned to vLen-blocks
 		for( int j = 0; j < bn; j++, ci++)
 			c[ ci ] *= aval;
-		//unrolled 8-block  (for better instruction-level parallelism)
-		for( int j = bn; j < len; j+=8, ci+=8) {
-			c[ ci+0 ] *= aval; c[ ci+1 ] *= aval;
-			c[ ci+2 ] *= aval; c[ ci+3 ] *= aval;
-			c[ ci+4 ] *= aval; c[ ci+5 ] *= aval;
-			c[ ci+6 ] *= aval; c[ ci+7 ] *= aval;
+		//unrolled vLen-block (for better instruction-level parallelism)
+		DoubleVector aVec = DoubleVector.broadcast(SPECIES, aval);
+		for( int j = bn; j < len; j+=vLen, ci+=vLen) {
+			DoubleVector cVec = DoubleVector.fromArray(SPECIES, c, ci);
+			cVec.mul(aVec).intoArray(c, ci);
 		}
 	}
 	
@@ -4510,26 +4509,18 @@ public class LibMatrixMult
 	//note: public for use by codegen for consistency
 	public static void vectAdd( double[] a, double[] c, int ai, int ci, final int len )
 	{
-		final int bn = len%8;
-		
-		//rest, not aligned to 8-blocks
+		final int bn = len%vLen;
+
+		//rest, not aligned to vLen-blocks
 		for( int j = 0; j < bn; j++, ai++, ci++)
 			c[ ci ] += a[ ai ];
-		
-		//unrolled 8-block  (for better instruction-level parallelism)
-		for( int j = bn; j < len; j+=8, ai+=8, ci+=8) 
+
+		//unrolled vLen-block (for better instruction-level parallelism)
+		for( int j = bn; j < len; j+=vLen, ai+=vLen, ci+=vLen)
 		{
-			//read 64B cachelines of a and c
-			//compute c' = c * a
-			//write back 64B cacheline of c = c'
-			c[ ci+0 ] += a[ ai+0 ];
-			c[ ci+1 ] += a[ ai+1 ];
-			c[ ci+2 ] += a[ ai+2 ];
-			c[ ci+3 ] += a[ ai+3 ];
-			c[ ci+4 ] += a[ ai+4 ];
-			c[ ci+5 ] += a[ ai+5 ];
-			c[ ci+6 ] += a[ ai+6 ];
-			c[ ci+7 ] += a[ ai+7 ];
+			DoubleVector aVec = DoubleVector.fromArray(SPECIES, a, ai);
+			DoubleVector cVec = DoubleVector.fromArray(SPECIES, c, ci);
+			cVec.add(aVec).intoArray(c, ci);
 		}
 	}
 
@@ -4553,26 +4544,21 @@ public class LibMatrixMult
 	
 	private static void vectAdd4( double[] a1, double[] a2, double[] a3, double[] a4, double[] c, int ai, int ci, final int len )
 	{
-		final int bn = len%8;
-		
-		//rest, not aligned to 8-blocks
+		final int bn = len%vLen;
+
+		//rest, not aligned to vLen-blocks
 		for( int j = 0; j < bn; j++, ai++, ci++)
 			c[ ci ] += a1[ ai ] + a2[ ai ] + a3[ ai ] + a4[ ai ];
-		
-		//unrolled 8-block  (for better instruction-level parallelism)
-		for( int j = bn; j < len; j+=8, ai+=8, ci+=8) 
+
+		//unrolled vLen-block (for better instruction-level parallelism)
+		for( int j = bn; j < len; j+=vLen, ai+=vLen, ci+=vLen)
 		{
-			//read 64B cachelines of a (4x) and c
-			//compute c' = c + a1 + a2 + a3 + a4
-			//write back 64B cacheline of c = c'
-			c[ ci+0 ] += a1[ ai+0 ] + a2[ ai+0 ] + a3[ ai+0 ] + a4[ ai+0 ];
-			c[ ci+1 ] += a1[ ai+1 ] + a2[ ai+1 ] + a3[ ai+1 ] + a4[ ai+1 ];
-			c[ ci+2 ] += a1[ ai+2 ] + a2[ ai+2 ] + a3[ ai+2 ] + a4[ ai+2 ];
-			c[ ci+3 ] += a1[ ai+3 ] + a2[ ai+3 ] + a3[ ai+3 ] + a4[ ai+3 ];
-			c[ ci+4 ] += a1[ ai+4 ] + a2[ ai+4 ] + a3[ ai+4 ] + a4[ ai+4 ];
-			c[ ci+5 ] += a1[ ai+5 ] + a2[ ai+5 ] + a3[ ai+5 ] + a4[ ai+5 ];
-			c[ ci+6 ] += a1[ ai+6 ] + a2[ ai+6 ] + a3[ ai+6 ] + a4[ ai+6 ];
-			c[ ci+7 ] += a1[ ai+7 ] + a2[ ai+7 ] + a3[ ai+7 ] + a4[ ai+7 ];
+			DoubleVector v1 = DoubleVector.fromArray(SPECIES, a1, ai);
+			DoubleVector v2 = DoubleVector.fromArray(SPECIES, a2, ai);
+			DoubleVector v3 = DoubleVector.fromArray(SPECIES, a3, ai);
+			DoubleVector v4 = DoubleVector.fromArray(SPECIES, a4, ai);
+			DoubleVector cVec = DoubleVector.fromArray(SPECIES, c, ci);
+			cVec.add(v1).add(v2).add(v3).add(v4).intoArray(c, ci);
 		}
 	}
 	
@@ -4587,41 +4573,32 @@ public class LibMatrixMult
 	}
 	
 	public static void vectAddInPlace(double aval, double[] c, final int ci, final int len) {
-		final int bn = len%8;
-		//rest, not aligned to 8-blocks
+		final int bn = len%vLen;
+		//rest, not aligned to vLen-blocks
 		for( int j = ci; j < ci+bn; j++)
 			c[ j ] += aval;
-		//unrolled 8-block  (for better instruction-level parallelism)
-		for( int j = ci+bn; j < ci+len; j+=8) {
-			c[ j+0 ] += aval; c[ j+1 ] += aval; 
-			c[ j+2 ] += aval; c[ j+3 ] += aval;
-			c[ j+4 ] += aval; c[ j+5 ] += aval;
-			c[ j+6 ] += aval; c[ j+7 ] += aval;
+		//unrolled vLen-block (for better instruction-level parallelism)
+		DoubleVector aVec = DoubleVector.broadcast(SPECIES, aval);
+		for( int j = ci+bn; j < ci+len; j+=vLen) {
+			DoubleVector cVec = DoubleVector.fromArray(SPECIES, c, j);
+			cVec.add(aVec).intoArray(c, j);
 		}
 	}
 
 	private static void vectSubtract( double[] a, double[] c, int ai, int ci, final int len )
 	{
-		final int bn = len%8;
-		
-		//rest, not aligned to 8-blocks
+		final int bn = len%vLen;
+
+		//rest, not aligned to vLen-blocks
 		for( int j = 0; j < bn; j++, ai++, ci++)
 			c[ ci ] -= a[ ai ];
-		
-		//unrolled 8-block  (for better instruction-level parallelism)
-		for( int j = bn; j < len; j+=8, ai+=8, ci+=8) 
+
+		//unrolled vLen-block (for better instruction-level parallelism)
+		for( int j = bn; j < len; j+=vLen, ai+=vLen, ci+=vLen)
 		{
-			//read 64B cachelines of a and c
-			//compute c' = c * a
-			//write back 64B cacheline of c = c'
-			c[ ci+0 ] -= a[ ai+0 ];
-			c[ ci+1 ] -= a[ ai+1 ];
-			c[ ci+2 ] -= a[ ai+2 ];
-			c[ ci+3 ] -= a[ ai+3 ];
-			c[ ci+4 ] -= a[ ai+4 ];
-			c[ ci+5 ] -= a[ ai+5 ];
-			c[ ci+6 ] -= a[ ai+6 ];
-			c[ ci+7 ] -= a[ ai+7 ];
+			DoubleVector aVec = DoubleVector.fromArray(SPECIES, a, ai);
+			DoubleVector cVec = DoubleVector.fromArray(SPECIES, c, ci);
+			cVec.sub(aVec).intoArray(c, ci);
 		}
 	}
 
